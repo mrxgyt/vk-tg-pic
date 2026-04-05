@@ -1,10 +1,10 @@
 """
 bot/user_settings.py
 ~~~~~~~~~~~~~~~~~~~~~
-Per-user settings storage with JSON file persistence.
+Per-user settings storage.
 
-Settings are kept in memory for fast access and saved to a JSON file
-on every change so they survive bot restarts.
+If DATABASE_URL is set — stores in PostgreSQL (via bot.db).
+Otherwise — falls back to a local JSON file.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
+
+import bot.db as _db
 
 logger = logging.getLogger(__name__)
 
@@ -129,13 +131,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 def _save_to_disk() -> None:
+    snapshot: dict[int, dict[str, Any]] = {
+        uid: {k: v for k, v in s.items() if k in _PERSISTENT_KEYS}
+        for uid, s in user_settings.items()
+    }
+    if _db.is_available():
+        _db.save_all_users(snapshot)
+        return
     try:
         SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        snapshot: dict[str, dict[str, Any]] = {}
-        for uid, s in user_settings.items():
-            snapshot[str(uid)] = {k: v for k, v in s.items() if k in _PERSISTENT_KEYS}
+        str_snapshot = {str(uid): data for uid, data in snapshot.items()}
         tmp = SETTINGS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2))
+        tmp.write_text(json.dumps(str_snapshot, ensure_ascii=False, indent=2))
         tmp.replace(SETTINGS_FILE)
         logger.info("Saved %d users to %s (size=%d bytes)",
                     len(snapshot), SETTINGS_FILE, SETTINGS_FILE.stat().st_size)
@@ -170,22 +177,43 @@ def _check_storage() -> None:
         logger.error("Storage directory %s is NOT writable: %s", parent, e)
 
 
+def _merge_saved(saved: dict[str, Any]) -> dict[str, Any]:
+    merged = {**DEFAULT_SETTINGS}
+    for k in _PERSISTENT_KEYS:
+        if k in saved:
+            merged[k] = saved[k]
+    return merged
+
+
 def load_settings() -> None:
+    if _db.is_available():
+        _db.init_tables()
+        raw = _db.load_all_users()
+        migrated = 0
+        for uid, saved in raw.items():
+            merged = _merge_saved(saved)
+            if "credits" not in saved:
+                gens = merged.get("generations_count", 0)
+                merged["credits"] = max(0, FREE_CREDITS - gens)
+                migrated += 1
+            user_settings[uid] = merged
+        logger.info("Loaded %d users from PostgreSQL", len(raw))
+        if migrated:
+            logger.info("Migrated credits for %d existing users", migrated)
+            _save_to_disk()
+        return
+
     _check_storage()
     if not SETTINGS_FILE.exists():
         logger.info("No saved settings file found at %s — starting fresh", SETTINGS_FILE)
         return
     try:
-        raw = json.loads(SETTINGS_FILE.read_text())
+        raw_file = json.loads(SETTINGS_FILE.read_text())
         count = 0
         migrated = 0
-        for uid_str, saved in raw.items():
+        for uid_str, saved in raw_file.items():
             uid = int(uid_str)
-            merged = {**DEFAULT_SETTINGS}
-            for k in _PERSISTENT_KEYS:
-                if k in saved:
-                    merged[k] = saved[k]
-            # Migrate existing users: if credits was never saved, init from generations_count
+            merged = _merge_saved(saved)
             if "credits" not in saved:
                 gens = merged.get("generations_count", 0)
                 merged["credits"] = max(0, FREE_CREDITS - gens)

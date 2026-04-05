@@ -13,12 +13,16 @@ import logging
 import os
 from pathlib import Path
 
+import bot.db as _db
+
 logger = logging.getLogger(__name__)
 
 _STORE_PATH = Path(os.environ.get("API_KEYS_FILE", str(Path(__file__).resolve().parent.parent / "data" / "api_keys.json")))
 
 
 def _load() -> list[str]:
+    if _db.is_available():
+        return _db.load_api_keys()
     try:
         if _STORE_PATH.exists():
             data = json.loads(_STORE_PATH.read_text(encoding="utf-8"))
@@ -29,6 +33,9 @@ def _load() -> list[str]:
 
 
 def _save(keys: list[str]) -> None:
+    if _db.is_available():
+        _db.save_api_keys(keys)
+        return
     try:
         _STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
         _STORE_PATH.write_text(json.dumps(keys, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -39,9 +46,12 @@ def _save(keys: list[str]) -> None:
 def migrate_env_keys() -> None:
     """
     Import env-var keys into the store on first-time setup only.
-    If the store file already exists, skip — the admin has full control.
+    If DB has keys already, or file exists, skip — the admin has full control.
     """
-    if _STORE_PATH.exists():
+    if _db.is_available():
+        if _db.api_keys_table_has_rows():
+            return
+    elif _STORE_PATH.exists():
         return
 
     env_keys: list[str] = []
