@@ -99,7 +99,7 @@ async def dummy_web_server():
     app.router.add_get("/", lambda request: web.Response(text="Bot is running!"))
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 5000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     logger.info(f"Starting dummy web server on port {port} to satisfy Cloud Run")
     await site.start()
