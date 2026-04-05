@@ -64,12 +64,18 @@ def _prepare_image_for_vk(image_bytes: bytes) -> tuple[bytes, str, str]:
 
 
 def _prepare_document_for_vk(image_bytes: bytes) -> tuple[bytes, str, str]:
-    """Convert to JPEG for document-mode upload.
+    """Ensure image is a compact JPEG before uploading to VK.
 
-    Raw 4K PNG can be 8-10 MB which reliably triggers VK 504.
-    JPEG at quality 93 is visually identical but ~1.5-2.5 MB — well
-    within what VK's upload servers handle without timeout.
+    If Gemini already returned JPEG (magic bytes FF D8), pass through as-is
+    — re-encoding would only add latency and degrade quality for no gain.
+    For PNG/other formats convert to JPEG 93% quality.
     """
+    # Fast path: already JPEG — no conversion needed
+    if image_bytes[:2] == b"\xff\xd8":
+        logger.info("Document already JPEG (%d bytes), skipping conversion", len(image_bytes))
+        return image_bytes, "image.jpg", "image/jpeg"
+
+    # Slow path: PNG or other — convert to JPEG
     img = Image.open(io.BytesIO(image_bytes))
     original_size = len(image_bytes)
 
@@ -89,7 +95,7 @@ def _prepare_document_for_vk(image_bytes: bytes) -> tuple[bytes, str, str]:
     img.save(buf, format="JPEG", quality=93)
     jpg_bytes = buf.getvalue()
     logger.info(
-        "Prepared document for VK: %dx%d PNG %d bytes -> JPEG %d bytes (%.0f%% of original)",
+        "Converted document PNG→JPEG: %dx%d, %d bytes -> %d bytes (%.0f%% of original)",
         w, h, original_size, len(jpg_bytes), len(jpg_bytes) / original_size * 100,
     )
     return jpg_bytes, "image.jpg", "image/jpeg"

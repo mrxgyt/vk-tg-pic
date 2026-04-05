@@ -113,7 +113,7 @@ def _build_config_for_model(
     safety = _get_safety_settings()
 
     image_cfg_kwargs: dict[str, Any] = {
-        "output_mime_type": "image/png",
+        "output_mime_type": "image/jpeg",
     }
     if not has_images:
         image_cfg_kwargs["aspect_ratio"] = aspect_ratio
