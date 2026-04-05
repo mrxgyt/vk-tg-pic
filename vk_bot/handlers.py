@@ -30,6 +30,54 @@ from vk_bot.photo_upload import upload_photo_to_vk, upload_document_to_vk, downl
 
 logger = logging.getLogger(__name__)
 
+SPINNER = ["◐", "◓", "◑", "◒"]
+ANIMATION_INTERVAL = 3.0  # seconds between edits
+
+
+class VKProgressAnimator:
+    """Edits a VK message every few seconds to show elapsed time."""
+
+    def __init__(self, bot: Bot, peer_id: int, message_id: int, base_text: str) -> None:
+        self._bot = bot
+        self._peer_id = peer_id
+        self._message_id = message_id
+        self._base_text = base_text
+        self._task: asyncio.Task | None = None
+        self._stopped = False
+        self._start_time = 0.0
+
+    def start(self) -> None:
+        self._start_time = time.monotonic()
+        self._task = asyncio.create_task(self._animate())
+
+    async def stop(self) -> None:
+        self._stopped = True
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _animate(self) -> None:
+        tick = 0
+        await asyncio.sleep(ANIMATION_INTERVAL)
+        while not self._stopped:
+            elapsed = int(time.monotonic() - self._start_time)
+            spin = SPINNER[tick % len(SPINNER)]
+            text = f"{self._base_text}\n\n{spin} Обработка — {elapsed} сек."
+            try:
+                await self._bot.api.messages.edit(
+                    peer_id=self._peer_id,
+                    message_id=self._message_id,
+                    message=text,
+                )
+            except Exception:
+                break
+            tick += 1
+            await asyncio.sleep(ANIMATION_INTERVAL)
+
+
 MENU_TEXTS = {"📋 меню", "📋 Меню", "меню", "menu"}
 SETTINGS_TEXTS = {"⚙️ настройки", "⚙️ Настройки", "настройки", "settings"}
 STOP_TEXTS = {"⛔ стоп", "⛔ Стоп", "стоп", "stop", "отмена", "cancel"}
@@ -562,10 +610,14 @@ async def _generate_and_send(
     max_side = RESOLUTIONS.get(resolution, {}).get("max_side", 0)
 
     action = "Редактирую" if images else "Генерирую"
+    base_text = f"🎨 {action} изображение...\n🤖 {model_label}"
     processing_id = await bot.api.messages.send(
         peer_id=peer_id, random_id=0,
-        message=f"🎨 {action} изображение...\n🤖 {model_label}\n\n◐ Обработка...",
+        message=f"{base_text}\n\n◐ Обработка — 0 сек.",
     )
+
+    animator = VKProgressAnimator(bot, peer_id, processing_id, base_text)
+    animator.start()
 
     start_time = time.monotonic()
 
@@ -587,6 +639,7 @@ async def _generate_and_send(
 
     try:
         image_bytes = await gen_task
+        await animator.stop()
         active_tasks.pop(uid, None)
         elapsed = int(time.monotonic() - start_time)
 
@@ -619,6 +672,7 @@ async def _generate_and_send(
             pass
 
     except asyncio.CancelledError:
+        await animator.stop()
         active_tasks.pop(uid, None)
         try:
             await bot.api.messages.edit(
@@ -629,6 +683,7 @@ async def _generate_and_send(
             pass
 
     except SafetyFilterError as exc:
+        await animator.stop()
         active_tasks.pop(uid, None)
         try:
             await bot.api.messages.edit(
@@ -639,6 +694,7 @@ async def _generate_and_send(
             pass
 
     except QuotaExceededError:
+        await animator.stop()
         active_tasks.pop(uid, None)
         current_name = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
         try:
@@ -652,6 +708,7 @@ async def _generate_and_send(
             pass
 
     except BotError as exc:
+        await animator.stop()
         active_tasks.pop(uid, None)
         try:
             await bot.api.messages.edit(
@@ -663,6 +720,7 @@ async def _generate_and_send(
             pass
 
     except Exception as exc:
+        await animator.stop()
         active_tasks.pop(uid, None)
         logger.exception("VK generation error: %s", exc)
         try:
