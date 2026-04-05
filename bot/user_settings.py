@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = Path(os.getenv("SETTINGS_FILE", "telegram-bot/data/user_settings.json"))
 
-_PERSISTENT_KEYS = {"model", "send_mode", "resolution", "aspect_ratio", "thinking_level", "first_name", "generations_count"}
+_PERSISTENT_KEYS = {"model", "send_mode", "resolution", "aspect_ratio", "thinking_level", "first_name", "generations_count", "platform"}
 
 user_settings: dict[int, dict[str, Any]] = {}
 
@@ -114,6 +114,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "thinking_level": "low",
     "first_name": "",
     "generations_count": 0,
+    "platform": "",
     "last_menu_message_id": None,
     "last_menu_chat_id": None,
 }
@@ -162,11 +163,13 @@ def save_user_settings(user_id: int) -> None:
     _save_to_disk()
 
 
-def increment_generations(user_id: int, first_name: str = "") -> int:
+def increment_generations(user_id: int, first_name: str = "", platform: str = "") -> int:
     s = get_user_settings(user_id)
     s["generations_count"] = s.get("generations_count", 0) + 1
     if first_name:
         s["first_name"] = first_name
+    if platform and not s.get("platform"):
+        s["platform"] = platform
     _save_to_disk()
     return s["generations_count"]
 

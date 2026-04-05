@@ -264,7 +264,7 @@ async def _run_generation(
             photo = BufferedInputFile(file=image_bytes, filename=fname)
             await message.answer_photo(photo=photo, caption=result_caption, parse_mode="HTML")
 
-        increment_generations(uid, user.first_name or "")
+        increment_generations(uid, user.first_name or "", platform="tg")
 
         try:
             await bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)

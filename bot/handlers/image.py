@@ -290,7 +290,7 @@ async def handle_photo_prompt(
                 parse_mode="HTML",
             )
 
-        increment_generations(uid, message.from_user.first_name or "")
+        increment_generations(uid, message.from_user.first_name or "", platform="tg")
 
         try:
             await bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)
@@ -461,7 +461,7 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
                 parse_mode="HTML",
             )
 
-        increment_generations(uid, message.from_user.first_name or "")
+        increment_generations(uid, message.from_user.first_name or "", platform="tg")
 
         try:
             await bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)

@@ -74,24 +74,29 @@ def _get_keys_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+_PLATFORM_ICON = {"tg": "✈️ TG", "vk": "🔵 VK"}
+
+
 def _users_text(page: int = 0, per_page: int = 10) -> tuple[str, InlineKeyboardMarkup]:
     all_users = list(user_settings.items())
     total = len(all_users)
+    total_gens = sum(s.get("generations_count", 0) for _, s in all_users)
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = max(0, min(page, total_pages - 1))
     start = page * per_page
     chunk = all_users[start:start + per_page]
 
-    lines = [f"👥 <b>Пользователи</b> ({total} всего)\n"]
+    lines = [f"👥 <b>Пользователи</b> ({total} чел. · {total_gens} генераций)\n"]
     for uid, s in chunk:
         name = s.get("first_name", "") or "—"
+        platform = s.get("platform", "")
+        platform_label = _PLATFORM_ICON.get(platform, "❓")
+        gens = s.get("generations_count", 0)
         model = s.get("model", "")
         model_label = AVAILABLE_MODELS.get(model, {}).get("label", model)
-        gens = s.get("generations_count", 0)
         lines.append(
-            f"• <b>{name}</b> (ID: <code>{uid}</code>)\n"
-            f"  Модель: {model_label}\n"
-            f"  Генераций: {gens}\n"
+            f"{platform_label} · <b>{name}</b> · <code>{uid}</code>\n"
+            f"  🎨 {gens} ген. · 🤖 {model_label}\n"
         )
 
     lines.append(f"\nСтраница {page + 1}/{total_pages}")
@@ -113,6 +118,14 @@ def _users_text(page: int = 0, per_page: int = 10) -> tuple[str, InlineKeyboardM
 def _stats_text() -> str:
     total_users = len(user_settings)
     total_gens = sum(s.get("generations_count", 0) for s in user_settings.values())
+
+    tg_users = sum(1 for s in user_settings.values() if s.get("platform") == "tg")
+    vk_users = sum(1 for s in user_settings.values() if s.get("platform") == "vk")
+    unknown_users = total_users - tg_users - vk_users
+
+    tg_gens = sum(s.get("generations_count", 0) for s in user_settings.values() if s.get("platform") == "tg")
+    vk_gens = sum(s.get("generations_count", 0) for s in user_settings.values() if s.get("platform") == "vk")
+
     model_counts: dict[str, int] = {}
     for s in user_settings.values():
         m = s.get("model", "unknown")
@@ -120,8 +133,16 @@ def _stats_text() -> str:
 
     lines = [
         "📊 <b>Статистика</b>\n",
-        f"👥 Пользователей: {total_users}",
-        f"🎨 Генераций всего: {total_gens}",
+        f"👥 Пользователей: <b>{total_users}</b>",
+        f"  ✈️ Telegram: {tg_users} чел. · {tg_gens} ген.",
+        f"  🔵 ВКонтакте: {vk_users} чел. · {vk_gens} ген.",
+    ]
+    if unknown_users:
+        lines.append(f"  ❓ Неизвестно: {unknown_users} чел.")
+
+    lines += [
+        "",
+        f"🎨 Генераций всего: <b>{total_gens}</b>",
         "",
         "<b>Модели:</b>",
     ]

@@ -598,7 +598,7 @@ async def _generate_and_send(
 
         try:
             first_name = settings.get("first_name", "")
-            increment_generations(uid, first_name)
+            increment_generations(uid, first_name, platform="vk")
         except Exception:
             pass
 
