@@ -31,7 +31,27 @@ from vk_bot.photo_upload import upload_photo_to_vk, upload_document_to_vk, downl
 logger = logging.getLogger(__name__)
 
 SPINNER = ["◐", "◓", "◑", "◒"]
-ANIMATION_INTERVAL = 3.0  # seconds between edits
+ANIMATION_INTERVAL = 5.0  # seconds between edits (give room for button callbacks)
+_VK_FLOOD_RETRY_DELAY = 1.5  # seconds to wait before retrying on flood control
+
+
+async def _vk_safe_edit(api: Any, *, retries: int = 3, **kwargs) -> None:
+    """Call messages.edit, retrying on VK flood-control (error 9)."""
+    for attempt in range(retries):
+        try:
+            await api.messages.edit(**kwargs)
+            return
+        except Exception as exc:
+            err = str(exc)
+            is_flood = (
+                "flood" in err.lower()
+                or "VKAPIError_9" in type(exc).__name__
+                or "[9]" in err
+            )
+            if is_flood and attempt < retries - 1:
+                await asyncio.sleep(_VK_FLOOD_RETRY_DELAY * (attempt + 1))
+                continue
+            raise
 
 
 class VKProgressAnimator:
@@ -67,7 +87,8 @@ class VKProgressAnimator:
             spin = SPINNER[tick % len(SPINNER)]
             text = f"{self._base_text}\n\n{spin} Обработка — {elapsed} сек."
             try:
-                await self._bot.api.messages.edit(
+                await _vk_safe_edit(
+                    self._bot.api,
                     peer_id=self._peer_id,
                     message_id=self._message_id,
                     message=text,
@@ -276,11 +297,11 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             pass
 
         async def edit_msg(message: str, keyboard=None):
-            """Edit the message that contained the pressed button."""
+            """Edit the message that contained the pressed button (flood-safe)."""
             kwargs = dict(peer_id=peer_id, conversation_message_id=cmid, message=message)
             if keyboard is not None:
                 kwargs["keyboard"] = keyboard
-            await bot.api.messages.edit(**kwargs)
+            await _vk_safe_edit(bot.api, **kwargs)
 
         if cmd == "back_settings":
             await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
