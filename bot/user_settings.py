@@ -141,7 +141,29 @@ def _save_to_disk() -> None:
         logger.exception("Failed to save user settings to %s", SETTINGS_FILE)
 
 
+def _check_storage() -> None:
+    """Log diagnostic info about storage at startup."""
+    env_val = os.getenv("SETTINGS_FILE", "(not set)")
+    logger.info("SETTINGS_FILE env var: %s", env_val)
+    logger.info("Resolved SETTINGS_FILE path: %s", SETTINGS_FILE.resolve())
+    if SETTINGS_FILE.exists():
+        size = SETTINGS_FILE.stat().st_size
+        logger.info("Settings file EXISTS, size=%d bytes", size)
+    else:
+        logger.info("Settings file does NOT exist yet (will be created on first save)")
+    parent = SETTINGS_FILE.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    test_file = parent / ".write_test"
+    try:
+        test_file.write_text("ok")
+        test_file.unlink()
+        logger.info("Storage directory %s is WRITABLE", parent)
+    except Exception as e:
+        logger.error("Storage directory %s is NOT writable: %s", parent, e)
+
+
 def load_settings() -> None:
+    _check_storage()
     if not SETTINGS_FILE.exists():
         logger.info("No saved settings file found at %s — starting fresh", SETTINGS_FILE)
         return
