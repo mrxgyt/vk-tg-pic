@@ -31,7 +31,7 @@ from vk_bot.photo_upload import upload_photo_to_vk, upload_document_to_vk, downl
 logger = logging.getLogger(__name__)
 
 SPINNER = ["◐", "◓", "◑", "◒"]
-ANIMATION_INTERVAL = 5.0  # seconds between edits (give room for button callbacks)
+ANIMATION_INTERVAL = 3.0  # seconds between edits
 _VK_FLOOD_RETRY_DELAY = 1.5  # seconds to wait before retrying on flood control
 
 
