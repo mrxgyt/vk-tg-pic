@@ -12,9 +12,18 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 MAX_VK_SIDE = 2560
-MAX_DOC_SIDE = 3840  # max side for document uploads (4K)
-MAX_DOC_BYTES = 4 * 1024 * 1024  # 4 MB target — reduce if exceeded
 MAX_RETRIES = 3
+
+
+def _detect_format(image_bytes: bytes) -> tuple[str, str]:
+    """Return (filename, content_type) based on file magic bytes."""
+    if image_bytes[:4] == b"\x89PNG":
+        return "image.png", "image/png"
+    if image_bytes[:2] == b"\xff\xd8":
+        return "image.jpg", "image/jpeg"
+    if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        return "image.webp", "image/webp"
+    return "image.png", "image/png"
 
 
 def _prepare_image_for_vk(image_bytes: bytes) -> tuple[bytes, str, str]:
@@ -40,7 +49,10 @@ def _prepare_image_for_vk(image_bytes: bytes) -> tuple[bytes, str, str]:
 
 
 async def upload_photo_to_vk(api: Any, peer_id: int, image_bytes: bytes) -> str:
-    jpg_bytes, filename, content_type = _prepare_image_for_vk(image_bytes)
+    loop = asyncio.get_running_loop()
+    jpg_bytes, filename, content_type = await loop.run_in_executor(
+        None, _prepare_image_for_vk, image_bytes
+    )
 
     last_err = None
     for attempt in range(MAX_RETRIES):
@@ -50,12 +62,7 @@ async def upload_photo_to_vk(api: Any, peer_id: int, image_bytes: bytes) -> str:
             logger.info("VK upload URL obtained (attempt %d), uploading %d bytes...", attempt + 1, len(jpg_bytes))
 
             form = aiohttp.FormData()
-            form.add_field(
-                "photo",
-                io.BytesIO(jpg_bytes),
-                filename=filename,
-                content_type=content_type,
-            )
+            form.add_field("photo", io.BytesIO(jpg_bytes), filename=filename, content_type=content_type)
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(upload_url, data=form) as resp:
@@ -88,53 +95,21 @@ async def upload_photo_to_vk(api: Any, peer_id: int, image_bytes: bytes) -> str:
     raise last_err
 
 
-def _prepare_document_sync(image_bytes: bytes) -> tuple[bytes, int, int]:
-    """CPU-heavy PNG preparation — runs in a thread pool to avoid blocking the event loop."""
-    img = Image.open(io.BytesIO(image_bytes))
-
-    if img.mode not in ("RGB", "RGBA"):
-        img = img.convert("RGB")
-
-    w, h = img.size
-    if max(w, h) > MAX_DOC_SIDE:
-        scale = MAX_DOC_SIDE / max(w, h)
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG", compress_level=6)
-    png_bytes = buf.getvalue()
-
-    scale_factor = 0.8
-    while len(png_bytes) > MAX_DOC_BYTES and max(img.size) > 800:
-        w, h = img.size
-        img = img.resize((int(w * scale_factor), int(h * scale_factor)), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", compress_level=6)
-        png_bytes = buf.getvalue()
-
-    return png_bytes, img.size[0], img.size[1]
-
-
-async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, filename: str = "image.png") -> str:
-    """Upload image as a document (full quality PNG)."""
-    loop = asyncio.get_running_loop()
-    png_bytes, out_w, out_h = await loop.run_in_executor(None, _prepare_document_sync, image_bytes)
-    logger.info("Prepared document for VK: %dx%d -> %d bytes PNG", out_w, out_h, len(png_bytes))
+async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, filename: str | None = None) -> str:
+    """Upload image as a document — sends raw bytes as-is, no compression."""
+    auto_filename, content_type = _detect_format(image_bytes)
+    fname = filename or auto_filename
+    logger.info("Uploading document to VK: %d bytes, format=%s", len(image_bytes), content_type)
 
     last_err = None
     for attempt in range(MAX_RETRIES):
         try:
             upload_server = await api.docs.get_messages_upload_server(type="doc", peer_id=peer_id)
             upload_url = upload_server.upload_url
-            logger.info("VK doc upload URL obtained (attempt %d), uploading %d bytes...", attempt + 1, len(png_bytes))
+            logger.info("VK doc upload URL obtained (attempt %d), uploading %d bytes...", attempt + 1, len(image_bytes))
 
             form = aiohttp.FormData()
-            form.add_field(
-                "file",
-                io.BytesIO(png_bytes),
-                filename=filename,
-                content_type="image/png",
-            )
+            form.add_field("file", io.BytesIO(image_bytes), filename=fname, content_type=content_type)
 
             timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -144,8 +119,7 @@ async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, file
                     logger.info("VK doc upload response (attempt %d): status=%d, body=%s", attempt + 1, status, raw_text[:300])
 
                     if status == 405:
-                        # VK returned a stale/invalid upload URL — retry immediately with a fresh one
-                        raise ValueError(f"VK returned 405 (stale upload URL), retrying...")
+                        raise ValueError("VK returned 405 (stale upload URL), retrying...")
                     if status != 200:
                         raise ValueError(f"VK upload returned HTTP {status}")
 
@@ -155,7 +129,7 @@ async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, file
             if not file_field:
                 raise ValueError(f"VK doc upload returned empty file field: {result}")
 
-            saved = await api.docs.save(file=file_field, title=filename)
+            saved = await api.docs.save(file=file_field, title=fname)
             doc = saved.doc
             attachment = f"doc{doc.owner_id}_{doc.id}"
             logger.info("VK document saved: %s", attachment)
@@ -166,7 +140,6 @@ async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, file
             is_stale_url = "405" in str(exc) or "stale upload URL" in str(exc)
             logger.warning("VK doc upload attempt %d failed: %s", attempt + 1, exc)
             if attempt < MAX_RETRIES - 1:
-                # No sleep for stale URL (405) — just get a new URL immediately
                 if not is_stale_url:
                     await asyncio.sleep(2)
 
