@@ -264,6 +264,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         uid = payload.get("user_id")
         peer_id = payload.get("peer_id")
         event_id = payload.get("event_id")
+        cmid = payload.get("conversation_message_id")  # ID of the message with the button
         data = payload.get("payload", {})
         cmd = data.get("cmd", "")
 
@@ -274,23 +275,22 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         except Exception:
             pass
 
+        async def edit_msg(message: str, keyboard=None):
+            """Edit the message that contained the pressed button."""
+            kwargs = dict(peer_id=peer_id, conversation_message_id=cmid, message=message)
+            if keyboard is not None:
+                kwargs["keyboard"] = keyboard
+            await bot.api.messages.edit(**kwargs)
+
         if cmd == "back_settings":
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="⚙️ Настройки\n\nВыберите что изменить:",
-                keyboard=get_settings_keyboard(uid),
-            )
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
 
         elif cmd == "choose_model":
             from vk_bot.keyboards import get_model_keyboard
             lines = ["🤖 Выберите модель:\n"]
             for model_id, info in AVAILABLE_MODELS.items():
                 lines.append(f"  {info['label']}\n  {info['desc']}\n")
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="\n".join(lines),
-                keyboard=get_model_keyboard(uid),
-            )
+            await edit_msg("\n".join(lines), get_model_keyboard(uid))
 
         elif cmd == "set_model":
             model_id = data.get("id", "")
@@ -298,28 +298,16 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 settings = get_user_settings(uid)
                 settings["model"] = model_id
                 save_user_settings(uid)
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="⚙️ Настройки\n\nВыберите что изменить:",
-                keyboard=get_settings_keyboard(uid),
-            )
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
 
         elif cmd == "choose_aspect":
             from vk_bot.keyboards import get_aspect_ratio_keyboard
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="📐 Выберите соотношение сторон:",
-                keyboard=get_aspect_ratio_keyboard(uid, 0),
-            )
+            await edit_msg("📐 Выберите соотношение сторон:", get_aspect_ratio_keyboard(uid, 0))
 
         elif cmd == "aspect_page":
             from vk_bot.keyboards import get_aspect_ratio_keyboard
             page = data.get("page", 0)
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="📐 Выберите соотношение сторон:",
-                keyboard=get_aspect_ratio_keyboard(uid, page),
-            )
+            await edit_msg("📐 Выберите соотношение сторон:", get_aspect_ratio_keyboard(uid, page))
 
         elif cmd == "set_aspect":
             ratio = data.get("id", "")
@@ -327,22 +315,14 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 settings = get_user_settings(uid)
                 settings["aspect_ratio"] = ratio
                 save_user_settings(uid)
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="⚙️ Настройки\n\nВыберите что изменить:",
-                keyboard=get_settings_keyboard(uid),
-            )
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
 
         elif cmd == "choose_thinking":
             from vk_bot.keyboards import get_thinking_keyboard
             lines = ["🧠 Уровень мышления (Flash):\n"]
             for level_id, info in THINKING_LEVELS.items():
                 lines.append(f"  {info['label']}\n  {info['desc']}\n")
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="\n".join(lines),
-                keyboard=get_thinking_keyboard(uid),
-            )
+            await edit_msg("\n".join(lines), get_thinking_keyboard(uid))
 
         elif cmd == "set_thinking":
             level = data.get("id", "")
@@ -350,22 +330,14 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 settings = get_user_settings(uid)
                 settings["thinking_level"] = level
                 save_user_settings(uid)
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="⚙️ Настройки\n\nВыберите что изменить:",
-                keyboard=get_settings_keyboard(uid),
-            )
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
 
         elif cmd == "choose_resolution":
             from vk_bot.keyboards import get_resolution_keyboard
             lines = ["🔍 Выберите качество:\n"]
             for res_id, info in RESOLUTIONS.items():
                 lines.append(f"  {info['label']}\n  {info['desc']}\n")
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="\n".join(lines),
-                keyboard=get_resolution_keyboard(uid),
-            )
+            await edit_msg("\n".join(lines), get_resolution_keyboard(uid))
 
         elif cmd == "set_resolution":
             res_id = data.get("id", "")
@@ -373,22 +345,14 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 settings = get_user_settings(uid)
                 settings["resolution"] = res_id
                 save_user_settings(uid)
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="⚙️ Настройки\n\nВыберите что изменить:",
-                keyboard=get_settings_keyboard(uid),
-            )
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
 
         elif cmd == "choose_send_mode":
             from vk_bot.keyboards import get_send_mode_keyboard
             lines = ["📤 Формат отправки:\n"]
             for mode_id, info in SEND_MODES.items():
                 lines.append(f"  {info['label']}\n  {info['desc']}\n")
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="\n".join(lines),
-                keyboard=get_send_mode_keyboard(uid),
-            )
+            await edit_msg("\n".join(lines), get_send_mode_keyboard(uid))
 
         elif cmd == "set_send_mode":
             mode_id = data.get("id", "")
@@ -396,11 +360,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 settings = get_user_settings(uid)
                 settings["send_mode"] = mode_id
                 save_user_settings(uid)
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="⚙️ Настройки\n\nВыберите что изменить:",
-                keyboard=get_settings_keyboard(uid),
-            )
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
 
         elif cmd == "switch_model":
             model_id = data.get("id", "")
@@ -409,18 +369,12 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 settings["model"] = model_id
                 save_user_settings(uid)
                 info = AVAILABLE_MODELS[model_id]
-                await bot.api.messages.send(
-                    peer_id=peer_id, random_id=0,
-                    message=f"✅ Модель переключена на {info['label']}\n\nОтправьте запрос ещё раз.",
-                )
+                await edit_msg(f"✅ Модель переключена на {info['label']}\n\nОтправьте запрос ещё раз.")
 
         elif cmd == "creative_generate":
             prompt = _creative_prompts.pop(uid, None)
             if not prompt:
-                await bot.api.messages.send(
-                    peer_id=peer_id, random_id=0,
-                    message="Промпт не найден, начните заново.",
-                )
+                await edit_msg("Промпт не найден, начните заново.")
                 return
             _creative_sessions.pop(uid, None)
             _creative_msg_counts.pop(uid, None)
@@ -433,26 +387,16 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                     "role": "user",
                     "text": "Давай изменим промпт. Что ты предлагаешь улучшить?",
                 })
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="✏️ Хорошо! Расскажите, что хотите изменить.",
-            )
+            await edit_msg("✏️ Хорошо! Расскажите, что хотите изменить.")
 
         elif cmd == "creative_cancel":
             _creative_sessions.pop(uid, None)
             _creative_prompts.pop(uid, None)
-            await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="❌ Режим «Идеи» завершён.\n\nМожете отправить промпт напрямую.",
-                keyboard=get_persistent_keyboard(),
-            )
+            await edit_msg("❌ Режим «Идеи» завершён.\n\nМожете отправить промпт напрямую.", get_persistent_keyboard())
 
         elif cmd == "creative_auto":
             if uid not in _creative_sessions:
-                await bot.api.messages.send(
-                    peer_id=peer_id, random_id=0,
-                    message="Сессия не найдена, начните заново.",
-                )
+                await edit_msg("Сессия не найдена, начните заново.")
                 return
             history = _creative_sessions[uid]
             history.append({
@@ -460,18 +404,12 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 "text": "Достаточно вопросов! Додумай остальные детали сам и сразу "
                         "выдай итоговый промпт в формате ---PROMPT--- ... ---END---",
             })
-            thinking_id = await bot.api.messages.send(
-                peer_id=peer_id, random_id=0,
-                message="🪄 Дополняю и создаю промпт...",
-            )
+            await edit_msg("🪄 Дополняю и создаю промпт...")
             try:
                 contents = _build_contents(history)
                 response = await vertex_service.chat_text(contents)
                 if not response:
-                    await bot.api.messages.edit(
-                        peer_id=peer_id, message_id=thinking_id,
-                        message="Не удалось получить ответ, попробуйте ещё раз.",
-                    )
+                    await edit_msg("Не удалось получить ответ, попробуйте ещё раз.")
                     return
                 history.append({"role": "model", "text": response})
                 extracted = _extract_prompt(response)
@@ -479,22 +417,12 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                     _creative_prompts[uid] = extracted
                     display_text = _clean_for_display(response)
                     prompt_preview = f"\n\nПромпт:\n{extracted[:500]}"
-                    await bot.api.messages.edit(
-                        peer_id=peer_id, message_id=thinking_id,
-                        message=f"{display_text}{prompt_preview}",
-                        keyboard=get_creative_prompt_keyboard(),
-                    )
+                    await edit_msg(f"{display_text}{prompt_preview}", get_creative_prompt_keyboard())
                 else:
-                    await bot.api.messages.edit(
-                        peer_id=peer_id, message_id=thinking_id,
-                        message=response,
-                    )
+                    await edit_msg(response)
             except Exception as exc:
                 logger.exception("Creative auto error: %s", exc)
-                await bot.api.messages.edit(
-                    peer_id=peer_id, message_id=thinking_id,
-                    message="Произошла ошибка, попробуйте ещё раз.",
-                )
+                await edit_msg("Произошла ошибка, попробуйте ещё раз.")
 
     @bot.on.message()
     async def handle_text(message: Message):
