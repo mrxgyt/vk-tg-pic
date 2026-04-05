@@ -209,7 +209,7 @@ def _build_vk_menu_text(first_name: str, generations: int, credits: int, blocked
         credit_line = "🚫 Доступ закрыт. Обратитесь к администратору.\n\n"
     else:
         credit_line = (
-            f"💳 Бесплатных кредитов выдано: {FREE_CREDITS}\n"
+            f"💳 Бесплатных кредитов: {FREE_CREDITS}\n"
             f"🎨 Использовано: {generations}\n"
             f"🔋 Осталось: {credits}\n\n"
         )

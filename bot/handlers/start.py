@@ -35,7 +35,7 @@ def _build_menu_text(first_name: str, generations: int, credits: int, blocked: b
         credit_line = "🚫 <b>Доступ закрыт.</b> Обратитесь к администратору.\n\n"
     else:
         credit_line = (
-            f"💳 Бесплатных кредитов выдано: <b>{FREE_CREDITS}</b>\n"
+            f"💳 Бесплатных кредитов: <b>{FREE_CREDITS}</b>\n"
             f"🎨 Использовано: <b>{generations}</b>\n"
             f"🔋 Осталось: <b>{credits}</b>\n\n"
         )
