@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 MAX_VK_SIDE = 2560          # max side for photo mode
 MAX_DOC_SIDE = 3840         # max side for document mode (4K cap)
+DOC_SIZE_TARGET = 500_000   # 500 KB ceiling — keeps uploads under ~13 sec at VK speeds
 MAX_RETRIES = 5
 _504_RETRY_DELAY = 10       # seconds before retry on VK server-side 504
 
@@ -64,18 +65,17 @@ def _prepare_image_for_vk(image_bytes: bytes) -> tuple[bytes, str, str]:
 
 
 def _prepare_document_for_vk(image_bytes: bytes) -> tuple[bytes, str, str]:
-    """Ensure image is a compact JPEG before uploading to VK.
+    """Convert image to JPEG and adaptively compress to stay under DOC_SIZE_TARGET.
 
-    If Gemini already returned JPEG (magic bytes FF D8), pass through as-is
-    — re-encoding would only add latency and degrade quality for no gain.
-    For PNG/other formats convert to JPEG 93% quality.
+    VK document upload servers (Russia) are ~40 KB/s from Replit (US).
+    Keeping the file under 500 KB guarantees upload ≤ ~13 sec regardless of
+    how large the original Gemini PNG is.
+
+    Strategy:
+      1. Try quality levels 90 → 82 → 74 → 65 at full resolution.
+      2. If still too large, halve the longest side and retry at quality 82.
+      3. Return the smallest result that fits, or the last attempt if nothing fits.
     """
-    # Fast path: already JPEG — no conversion needed
-    if image_bytes[:2] == b"\xff\xd8":
-        logger.info("Document already JPEG (%d bytes), skipping conversion", len(image_bytes))
-        return image_bytes, "image.jpg", "image/jpeg"
-
-    # Slow path: PNG or other — convert to JPEG
     img = Image.open(io.BytesIO(image_bytes))
     original_size = len(image_bytes)
 
@@ -86,19 +86,38 @@ def _prepare_document_for_vk(image_bytes: bytes) -> tuple[bytes, str, str]:
     elif img.mode != "RGB":
         img = img.convert("RGB")
 
+    # Hard cap at MAX_DOC_SIDE (4K) — avoid absurdly large originals
     w, h = img.size
     if max(w, h) > MAX_DOC_SIDE:
         scale = MAX_DOC_SIDE / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        w, h = img.size
 
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=93)
-    jpg_bytes = buf.getvalue()
+    def _encode(pil_img: Image.Image, quality: int) -> bytes:
+        buf = io.BytesIO()
+        pil_img.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+
+    # Pass 1: try descending quality at original (capped) resolution
+    for quality in (90, 82, 74, 65):
+        result = _encode(img, quality)
+        if len(result) <= DOC_SIZE_TARGET:
+            logger.info(
+                "Doc prepared: %dx%d q=%d → %d bytes (%.0f%% of orig %d bytes)",
+                w, h, quality, len(result), len(result) / original_size * 100, original_size,
+            )
+            return result, "image.jpg", "image/jpeg"
+
+    # Pass 2: scale down to half the longest side
+    scale = (MAX_DOC_SIDE / 2) / max(w, h)
+    small = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    sw, sh = small.size
+    result = _encode(small, 82)
     logger.info(
-        "Converted document PNG→JPEG: %dx%d, %d bytes -> %d bytes (%.0f%% of original)",
-        w, h, original_size, len(jpg_bytes), len(jpg_bytes) / original_size * 100,
+        "Doc prepared (resized): %dx%d → %dx%d q=82 → %d bytes (%.0f%% of orig %d bytes)",
+        w, h, sw, sh, len(result), len(result) / original_size * 100, original_size,
     )
-    return jpg_bytes, "image.jpg", "image/jpeg"
+    return result, "image.jpg", "image/jpeg"
 
 
 def _make_connector() -> aiohttp.TCPConnector:
