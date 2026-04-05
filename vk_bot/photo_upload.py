@@ -15,8 +15,8 @@ MAX_RETRIES = 3
 
 async def upload_photo_to_vk(api: Any, peer_id: int, image_bytes: bytes) -> str:
     # Отправляем оригинальные байты от нейросети напрямую, без урезаний и "пережевывания" через Pillow
-    filename = "image.png"
-    content_type = "image/png"
+    filename = "image.jpg"
+    content_type = "image/jpeg"
 
     last_err = None
     for attempt in range(MAX_RETRIES):
