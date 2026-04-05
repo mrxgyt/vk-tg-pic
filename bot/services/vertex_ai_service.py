@@ -90,7 +90,7 @@ def _build_config_for_model(
     safety = _get_safety_settings()
 
     image_cfg_kwargs: dict[str, Any] = {
-        "output_mime_type": "image/jpeg",
+        "output_mime_type": "image/png",
     }
     if not has_images:
         image_cfg_kwargs["aspect_ratio"] = aspect_ratio
@@ -415,15 +415,7 @@ class VertexAIService:
         ):
             if not chunk.candidates:
                 continue
-                
-            candidate = chunk.candidates[0]
-            if getattr(candidate, "content", None) is None or getattr(candidate.content, "parts", None) is None:
-                reason = getattr(candidate, "finish_reason", "UNKNOWN")
-                if "SAFETY" in str(reason).upper() or "BLOCK" in str(reason).upper():
-                    raise SafetyFilterError(f"Запрос заблокирован фильтрами (FinishReason: {reason})")
-                continue
-                
-            for part in candidate.content.parts:
+            for part in chunk.candidates[0].content.parts:
                 if getattr(part, "inline_data", None) is not None:
                     image_bytes = part.inline_data.data
                 elif getattr(part, "text", None):
@@ -503,12 +495,7 @@ class VertexAIService:
         ):
             if not chunk.candidates:
                 continue
-                
-            candidate = chunk.candidates[0]
-            if getattr(candidate, "content", None) is None or getattr(candidate.content, "parts", None) is None:
-                continue
-                
-            for part in candidate.content.parts:
+            for part in chunk.candidates[0].content.parts:
                 if getattr(part, "text", None):
                     text_parts.append(part.text)
 
