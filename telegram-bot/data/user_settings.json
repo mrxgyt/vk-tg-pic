@@ -2,19 +2,19 @@
   "6014789391": {
     "model": "gemini-3-pro-image-preview",
     "send_mode": "document",
-    "resolution": "original",
+    "resolution": "4k",
     "aspect_ratio": "16:9",
     "thinking_level": "low",
     "first_name": "Гайрат",
-    "generations_count": 2
+    "generations_count": 3
   },
   "789556086": {
-    "model": "gemini-3.1-flash-image-preview",
+    "model": "gemini-3-pro-image-preview",
     "send_mode": "document",
     "resolution": "4k",
     "aspect_ratio": "16:9",
     "thinking_level": "high",
     "first_name": "Гайрат",
-    "generations_count": 10
+    "generations_count": 11
   }
 }

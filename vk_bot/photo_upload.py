@@ -88,36 +88,38 @@ async def upload_photo_to_vk(api: Any, peer_id: int, image_bytes: bytes) -> str:
     raise last_err
 
 
-async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, filename: str = "image.png") -> str:
-    """Upload image as a document (no compression, full quality PNG)."""
-    # Ensure it's a valid PNG
+def _prepare_document_sync(image_bytes: bytes) -> tuple[bytes, int, int]:
+    """CPU-heavy PNG preparation — runs in a thread pool to avoid blocking the event loop."""
     img = Image.open(io.BytesIO(image_bytes))
 
-    # Convert to RGB if needed (PNG supports RGBA but keep it)
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
 
-    # Limit max side to MAX_DOC_SIDE
     w, h = img.size
     if max(w, h) > MAX_DOC_SIDE:
         scale = MAX_DOC_SIDE / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # Save with maximum PNG compression to reduce file size
     buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True, compress_level=9)
+    img.save(buf, format="PNG", compress_level=6)
     png_bytes = buf.getvalue()
 
-    # If still too large, downscale progressively until under MAX_DOC_BYTES
     scale_factor = 0.8
     while len(png_bytes) > MAX_DOC_BYTES and max(img.size) > 800:
         w, h = img.size
         img = img.resize((int(w * scale_factor), int(h * scale_factor)), Image.LANCZOS)
         buf = io.BytesIO()
-        img.save(buf, format="PNG", optimize=True, compress_level=9)
+        img.save(buf, format="PNG", compress_level=6)
         png_bytes = buf.getvalue()
 
-    logger.info("Prepared document for VK: %dx%d -> %d bytes PNG", img.size[0], img.size[1], len(png_bytes))
+    return png_bytes, img.size[0], img.size[1]
+
+
+async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, filename: str = "image.png") -> str:
+    """Upload image as a document (full quality PNG)."""
+    loop = asyncio.get_running_loop()
+    png_bytes, out_w, out_h = await loop.run_in_executor(None, _prepare_document_sync, image_bytes)
+    logger.info("Prepared document for VK: %dx%d -> %d bytes PNG", out_w, out_h, len(png_bytes))
 
     last_err = None
     for attempt in range(MAX_RETRIES):
