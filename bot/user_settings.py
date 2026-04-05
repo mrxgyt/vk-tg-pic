@@ -137,6 +137,8 @@ def _save_to_disk() -> None:
         tmp = SETTINGS_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2))
         tmp.replace(SETTINGS_FILE)
+        logger.info("Saved %d users to %s (size=%d bytes)",
+                    len(snapshot), SETTINGS_FILE, SETTINGS_FILE.stat().st_size)
     except Exception:
         logger.exception("Failed to save user settings to %s", SETTINGS_FILE)
 
@@ -146,13 +148,19 @@ def _check_storage() -> None:
     env_val = os.getenv("SETTINGS_FILE", "(not set)")
     logger.info("SETTINGS_FILE env var: %s", env_val)
     logger.info("Resolved SETTINGS_FILE path: %s", SETTINGS_FILE.resolve())
+    parent = SETTINGS_FILE.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    # List all files in the storage directory
+    try:
+        files = list(parent.iterdir())
+        logger.info("Contents of %s: %s", parent, [f.name for f in files])
+    except Exception as e:
+        logger.error("Cannot list %s: %s", parent, e)
     if SETTINGS_FILE.exists():
         size = SETTINGS_FILE.stat().st_size
         logger.info("Settings file EXISTS, size=%d bytes", size)
     else:
         logger.info("Settings file does NOT exist yet (will be created on first save)")
-    parent = SETTINGS_FILE.parent
-    parent.mkdir(parents=True, exist_ok=True)
     test_file = parent / ".write_test"
     try:
         test_file.write_text("ok")
