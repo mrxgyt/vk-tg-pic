@@ -11,10 +11,10 @@
   "789556086": {
     "model": "gemini-3.1-flash-image-preview",
     "send_mode": "document",
-    "resolution": "2k",
+    "resolution": "4k",
     "aspect_ratio": "16:9",
-    "thinking_level": "low",
+    "thinking_level": "high",
     "first_name": "Гайрат",
-    "generations_count": 5
+    "generations_count": 6
   }
 }

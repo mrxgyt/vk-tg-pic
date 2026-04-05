@@ -12,6 +12,8 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 MAX_VK_SIDE = 2560
+MAX_DOC_SIDE = 3840  # max side for document uploads (4K)
+MAX_DOC_BYTES = 4 * 1024 * 1024  # 4 MB target — reduce if exceeded
 MAX_RETRIES = 3
 
 
@@ -90,10 +92,32 @@ async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, file
     """Upload image as a document (no compression, full quality PNG)."""
     # Ensure it's a valid PNG
     img = Image.open(io.BytesIO(image_bytes))
+
+    # Convert to RGB if needed (PNG supports RGBA but keep it)
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
+
+    # Limit max side to MAX_DOC_SIDE
+    w, h = img.size
+    if max(w, h) > MAX_DOC_SIDE:
+        scale = MAX_DOC_SIDE / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    # Save with maximum PNG compression to reduce file size
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="PNG", optimize=True, compress_level=9)
     png_bytes = buf.getvalue()
-    logger.info("Prepared document for VK: %d bytes PNG", len(png_bytes))
+
+    # If still too large, downscale progressively until under MAX_DOC_BYTES
+    scale_factor = 0.8
+    while len(png_bytes) > MAX_DOC_BYTES and max(img.size) > 800:
+        w, h = img.size
+        img = img.resize((int(w * scale_factor), int(h * scale_factor)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True, compress_level=9)
+        png_bytes = buf.getvalue()
+
+    logger.info("Prepared document for VK: %dx%d -> %d bytes PNG", img.size[0], img.size[1], len(png_bytes))
 
     last_err = None
     for attempt in range(MAX_RETRIES):
@@ -110,7 +134,8 @@ async def upload_document_to_vk(api: Any, peer_id: int, image_bytes: bytes, file
                 content_type="image/png",
             )
 
-            async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(upload_url, data=form) as resp:
                     raw_text = await resp.text()
                     logger.info("VK doc upload response (attempt %d): status=%d, body=%s", attempt + 1, resp.status, raw_text[:300])
