@@ -111,7 +111,7 @@ async def web_server():
     app = create_web_app()
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     logger.info("Web server starting on port %d (landing + payment webhooks)", port)
     await site.start()
