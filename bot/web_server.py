@@ -12,7 +12,12 @@ from bot.user_settings import add_credits
 
 logger = logging.getLogger(__name__)
 
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "web" / "templates"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_TEMPLATES_CANDIDATES = [
+    _PROJECT_ROOT / "web" / "templates",
+    Path("/app/web/templates"),
+    Path("/app") / "web" / "templates",
+]
 
 PALLY_SHOP_ID = os.getenv("PALLY_SHOP_ID", "")
 PALLY_TOKEN = os.getenv("PALLY_TOKEN", "")
@@ -23,8 +28,28 @@ CREDIT_PACKAGES = {
 }
 
 
+def _find_templates_dir() -> Path | None:
+    for d in _TEMPLATES_CANDIDATES:
+        if d.is_dir():
+            return d
+    return None
+
+
 def _read_template(name: str) -> str:
-    return (TEMPLATES_DIR / name).read_text(encoding="utf-8")
+    tdir = _find_templates_dir()
+    if tdir:
+        f = tdir / name
+        if f.exists():
+            return f.read_text(encoding="utf-8")
+    logger.warning("Template %s not found, using fallback", name)
+    return _FALLBACK_TEMPLATES.get(name, "<h1>PicGenAI</h1>")
+
+
+_FALLBACK_TEMPLATES = {
+    "index.html": """<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>PicGenAI</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#08070e;color:#e4e4ef;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}.c{max-width:600px;padding:40px}h1{font-size:2.5em;margin-bottom:16px;background:linear-gradient(135deg,#a78bfa,#60a5fa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}p{color:#8888a8;line-height:1.7;margin-bottom:24px}.btn{display:inline-block;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:600;color:#fff;margin:8px;background:linear-gradient(135deg,#7c3aed,#6366f1)}.btn.vk{background:#4C75A3}</style></head><body><div class="c"><h1>PicGenAI</h1><p>Генерация изображений с помощью ИИ. Работает в Telegram и ВКонтакте.</p><a href="https://t.me/PicGenAI_26_bot" class="btn">Telegram Bot</a><a href="https://vk.ru/picgenai" class="btn vk">ВКонтакте</a></div></body></html>""",
+    "success.html": """<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Оплата успешна</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#08070e;color:#e4e4ef;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}.c{max-width:440px;padding:48px 40px;background:rgba(255,255,255,.03);border:1px solid rgba(52,211,153,.2);border-radius:24px}h1{color:#34d399;margin:16px 0}p{color:#8888a8;line-height:1.7}</style></head><body><div class="c"><h1>Оплата прошла успешно!</h1><p>Кредиты начислены. Вернитесь в бота.</p><p><a href="https://t.me/PicGenAI_26_bot" style="color:#a78bfa">Вернуться в бота</a></p></div></body></html>""",
+    "fail.html": """<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Ошибка оплаты</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#08070e;color:#e4e4ef;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}.c{max-width:440px;padding:48px 40px;background:rgba(255,255,255,.03);border:1px solid rgba(248,113,113,.2);border-radius:24px}h1{color:#f87171;margin:16px 0}p{color:#8888a8;line-height:1.7}</style></head><body><div class="c"><h1>Оплата не прошла</h1><p>Платёж не был завершён. Попробуйте ещё раз.</p><p><a href="https://t.me/PicGenAI_26_bot" style="color:#a78bfa">Вернуться в бота</a></p></div></body></html>""",
+}
 
 
 def _verify_sign(data: dict, token: str) -> bool:
