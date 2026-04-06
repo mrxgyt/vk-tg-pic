@@ -3,6 +3,8 @@ import os
 import time
 import aiohttp
 
+import bot.db as _db
+
 logger = logging.getLogger(__name__)
 
 PALLY_API_URL = "https://pally.info/api/v1"
@@ -26,12 +28,14 @@ async def create_payment(user_id: int, pack_key: str) -> dict:
 
     order_id = f"{user_id}_{pack_key}_{int(time.time())}"
 
+    _db.save_payment(order_id, user_id, pack_key, pack["amount"])
+
     payload = {
         "shop_id": PALLY_SHOP_ID,
         "amount": pack["amount"],
         "currency": "RUB",
         "order_id": order_id,
-        "description": f"AI Image Bot: {pack['label']}",
+        "description": f"PicGenAI: {pack['label']}",
         "success_url": f"{BASE_URL}/payment/success",
         "fail_url": f"{BASE_URL}/payment/fail",
         "result_url": f"{BASE_URL}/webhook/pally",

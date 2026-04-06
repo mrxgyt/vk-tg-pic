@@ -52,6 +52,18 @@ def init_tables() -> None:
                     key TEXT UNIQUE NOT NULL
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_payments (
+                    order_id    TEXT PRIMARY KEY,
+                    payment_id  TEXT,
+                    user_id     BIGINT NOT NULL,
+                    pack_key    TEXT NOT NULL,
+                    amount      REAL NOT NULL,
+                    status      TEXT NOT NULL DEFAULT 'pending',
+                    created_at  TIMESTAMP DEFAULT NOW(),
+                    completed_at TIMESTAMP
+                )
+            """)
         logger.info("db: tables ready (PostgreSQL)")
     except Exception:
         logger.exception("db: failed to init tables")
@@ -129,6 +141,72 @@ def save_api_keys(keys: list[str]) -> None:
         logger.info("db: saved %d api keys to PostgreSQL", len(keys))
     except Exception:
         logger.exception("db: failed to save api keys")
+
+
+def save_payment(order_id: str, user_id: int, pack_key: str, amount: float) -> None:
+    if not _DATABASE_URL:
+        return
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO bot_payments (order_id, user_id, pack_key, amount, status)
+                VALUES (%s, %s, %s, %s, 'pending')
+                ON CONFLICT (order_id) DO NOTHING
+            """, (order_id, user_id, pack_key, amount))
+    except Exception:
+        logger.exception("db: failed to save payment %s", order_id)
+
+
+def complete_payment(order_id: str, payment_id: str = "") -> bool:
+    if not _DATABASE_URL:
+        return True
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE bot_payments
+                SET status = 'success', payment_id = %s, completed_at = NOW()
+                WHERE order_id = %s AND status = 'pending'
+            """, (payment_id, order_id))
+            return cur.rowcount > 0
+    except Exception:
+        logger.exception("db: failed to complete payment %s", order_id)
+        return False
+
+
+def get_payment(order_id: str) -> dict | None:
+    if not _DATABASE_URL:
+        return None
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT order_id, user_id, pack_key, amount, status FROM bot_payments WHERE order_id = %s",
+                (order_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                return {
+                    "order_id": row[0],
+                    "user_id": row[1],
+                    "pack_key": row[2],
+                    "amount": row[3],
+                    "status": row[4],
+                }
+    except Exception:
+        logger.exception("db: failed to get payment %s", order_id)
+    return None
+
+
+_processed_orders: set[str] = set()
+
+
+def mark_order_processed_memory(order_id: str) -> bool:
+    if order_id in _processed_orders:
+        return False
+    _processed_orders.add(order_id)
+    return True
 
 
 def api_keys_table_has_rows() -> bool:

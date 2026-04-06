@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -6,7 +7,8 @@ from pathlib import Path
 
 from aiohttp import web
 
-from bot.user_settings import add_credits, get_user_settings, save_user_settings
+import bot.db as _db
+from bot.user_settings import add_credits
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,7 @@ def _verify_sign(data: dict, token: str) -> bool:
     values = [str(filtered[k]) for k in sorted_keys]
     raw = ":".join(values) + ":" + token
     expected = hashlib.sha256(raw.encode()).hexdigest()
-    return expected == sign
+    return hmac.compare_digest(expected, sign)
 
 
 async def handle_index(request: web.Request) -> web.Response:
@@ -52,6 +54,16 @@ async def handle_fail(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+def _parse_webhook_body(data: dict) -> web.Response | None:
+    if not PALLY_TOKEN:
+        logger.error("Webhook called but PALLY_TOKEN is not configured — rejecting")
+        return web.Response(text="NOT CONFIGURED", status=503)
+    if not _verify_sign(data, PALLY_TOKEN):
+        logger.warning("Pally webhook: invalid signature")
+        return web.Response(text="INVALID SIGN", status=403)
+    return None
+
+
 async def handle_webhook(request: web.Request) -> web.Response:
     try:
         data = await request.json()
@@ -64,37 +76,82 @@ async def handle_webhook(request: web.Request) -> web.Response:
 
     logger.info("Pally webhook received: %s", json.dumps(data, ensure_ascii=False))
 
-    if PALLY_TOKEN and not _verify_sign(data, PALLY_TOKEN):
-        logger.warning("Pally webhook: invalid signature")
-        return web.Response(text="INVALID SIGN", status=403)
+    err = _parse_webhook_body(data)
+    if err:
+        return err
 
     status = data.get("status", "")
     order_id = data.get("order_id", "")
+    payment_id = data.get("payment_id", "")
+    received_amount = data.get("amount")
+    received_shop_id = data.get("shop_id", "")
+
+    if PALLY_SHOP_ID and received_shop_id and received_shop_id != PALLY_SHOP_ID:
+        logger.warning("Webhook shop_id mismatch: expected=%s got=%s", PALLY_SHOP_ID, received_shop_id)
+        return web.Response(text="SHOP MISMATCH", status=403)
 
     if status == "success" and order_id:
-        parts = order_id.split("_")
-        if len(parts) >= 3:
-            try:
-                user_id = int(parts[0])
-                pack_key = "_".join(parts[1:3])
-                pack = CREDIT_PACKAGES.get(pack_key)
-                if pack:
-                    new_balance = add_credits(user_id, pack["credits"])
-                    logger.info(
-                        "Credits added: user=%s, pack=%s, credits=+%d, balance=%d",
-                        user_id, pack_key, pack["credits"], new_balance,
-                    )
-                else:
-                    logger.warning("Unknown pack in order_id: %s", order_id)
-            except (ValueError, IndexError):
-                logger.error("Cannot parse order_id: %s", order_id)
+        if _db.is_available():
+            stored = _db.get_payment(order_id)
+            if stored:
+                if stored["status"] == "success":
+                    logger.info("Duplicate webhook for already-completed order %s — skipping", order_id)
+                    return web.Response(text="OK", status=200)
+                if received_amount is not None:
+                    try:
+                        if abs(float(received_amount) - stored["amount"]) > 0.01:
+                            logger.warning(
+                                "Amount mismatch for %s: expected=%.2f got=%s",
+                                order_id, stored["amount"], received_amount,
+                            )
+                            return web.Response(text="AMOUNT MISMATCH", status=400)
+                    except (ValueError, TypeError):
+                        pass
+                if not _db.complete_payment(order_id, payment_id):
+                    logger.info("Order %s already completed (race) — skipping", order_id)
+                    return web.Response(text="OK", status=200)
+                new_balance = add_credits(stored["user_id"], CREDIT_PACKAGES[stored["pack_key"]]["credits"])
+                logger.info(
+                    "Credits added: user=%s, pack=%s, credits=+%d, balance=%d",
+                    stored["user_id"], stored["pack_key"],
+                    CREDIT_PACKAGES[stored["pack_key"]]["credits"], new_balance,
+                )
+            else:
+                if not _db.mark_order_processed_memory(order_id):
+                    logger.info("Duplicate in-memory webhook for %s — skipping", order_id)
+                    return web.Response(text="OK", status=200)
+                _credit_from_order_id(order_id)
         else:
-            logger.warning("Unexpected order_id format: %s", order_id)
+            if not _db.mark_order_processed_memory(order_id):
+                logger.info("Duplicate in-memory webhook for %s — skipping", order_id)
+                return web.Response(text="OK", status=200)
+            _credit_from_order_id(order_id)
 
     elif status in ("refund", "chargeback") and order_id:
         logger.warning("Pally %s for order %s", status, order_id)
 
     return web.Response(text="OK", status=200)
+
+
+def _credit_from_order_id(order_id: str) -> None:
+    parts = order_id.split("_")
+    if len(parts) >= 3:
+        try:
+            user_id = int(parts[0])
+            pack_key = "_".join(parts[1:3])
+            pack = CREDIT_PACKAGES.get(pack_key)
+            if pack:
+                new_balance = add_credits(user_id, pack["credits"])
+                logger.info(
+                    "Credits added (fallback): user=%s, pack=%s, credits=+%d, balance=%d",
+                    user_id, pack_key, pack["credits"], new_balance,
+                )
+            else:
+                logger.warning("Unknown pack in order_id: %s", order_id)
+        except (ValueError, IndexError):
+            logger.error("Cannot parse order_id: %s", order_id)
+    else:
+        logger.warning("Unexpected order_id format: %s", order_id)
 
 
 async def handle_refund(request: web.Request) -> web.Response:
