@@ -176,6 +176,20 @@ def get_balance_keyboard() -> str:
     return kb.get_json()
 
 
+def get_payment_method_keyboard(pack_key: str) -> str:
+    kb = Keyboard(inline=True)
+    kb.add(Callback("💳 Банковская карта", payload={"cmd": "pay_method", "pack": pack_key, "method": "card"}))
+    kb.row()
+    kb.add(Callback("🏦 СБП", payload={"cmd": "pay_method", "pack": pack_key, "method": "sbp"}))
+    kb.row()
+    kb.add(Callback("🇷🇺 МИР", payload={"cmd": "pay_method", "pack": pack_key, "method": "mir"}))
+    kb.row()
+    kb.add(Callback("🟣 ЮMoney", payload={"cmd": "pay_method", "pack": pack_key, "method": "yoomoney"}))
+    kb.row()
+    kb.add(Callback("◀️ Назад", payload={"cmd": "back_balance"}))
+    return kb.get_json()
+
+
 def get_switch_model_keyboard(current_model: str) -> str:
     kb = Keyboard(inline=True)
     for model_id, info in AVAILABLE_MODELS.items():

@@ -215,3 +215,13 @@ def get_balance_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💎 100 кредитов — 299₽", callback_data="buy_pack_100")],
         [InlineKeyboardButton(text="💎 200 кредитов — 549₽", callback_data="buy_pack_200")],
     ])
+
+
+def get_payment_method_keyboard(pack_key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Банковская карта", callback_data=f"pay_{pack_key}_card")],
+        [InlineKeyboardButton(text="🏦 СБП", callback_data=f"pay_{pack_key}_sbp")],
+        [InlineKeyboardButton(text="🇷🇺 МИР", callback_data=f"pay_{pack_key}_mir")],
+        [InlineKeyboardButton(text="🟣 ЮMoney", callback_data=f"pay_{pack_key}_yoomoney")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_balance")],
+    ])

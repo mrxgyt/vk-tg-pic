@@ -22,6 +22,7 @@ from bot.keyboards import (
     get_thinking_level_keyboard,
     get_settings_summary_keyboard,
     get_balance_keyboard,
+    get_payment_method_keyboard,
 )
 from bot.user_settings import (
     user_settings, get_user_settings, set_last_menu, save_user_settings,
@@ -241,21 +242,67 @@ async def buy_credits(callback: CallbackQuery) -> None:
         await callback.answer("Неизвестный пакет")
         return
 
-    result = create_payment_url(callback.from_user.id, pack_key)
+    await _safe_edit(
+        callback,
+        f"💳 <b>{pack['label']}</b>\n\n"
+        "Выберите способ оплаты:",
+        reply_markup=get_payment_method_keyboard(pack_key),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("pay_"))
+async def pay_with_method(callback: CallbackQuery) -> None:
+    parts = callback.data.split("_")
+    if len(parts) < 3:
+        await callback.answer("Ошибка")
+        return
+    method = parts[-1]
+    pack_key = "_".join(parts[1:-1])
+    pack = CREDIT_PACKAGES.get(pack_key)
+    if not pack:
+        await callback.answer("Неизвестный пакет")
+        return
+
+    await callback.answer("⏳ Создаю ссылку на оплату...")
+
+    result = await create_payment_url(callback.from_user.id, pack_key, method)
     if result["ok"]:
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💳 Перейти к оплате", url=result["pay_url"])],
+            [InlineKeyboardButton(text="◀️ Другой способ", callback_data=f"buy_{pack_key}")],
         ])
+        from bot.services.freekassa_service import PAYMENT_METHODS
+        method_label = PAYMENT_METHODS.get(method, {}).get("label", method)
         await _safe_edit(
             callback,
-            f"💳 <b>Оплата: {pack['label']}</b>\n\n"
+            f"💳 <b>Оплата: {pack['label']}</b>\n"
+            f"Способ: {method_label}\n\n"
             "Нажмите кнопку ниже для перехода к оплате.\n"
             "Кредиты будут начислены автоматически после оплаты.",
             reply_markup=kb,
         )
     else:
         await callback.answer(f"Ошибка: {result.get('error', 'неизвестная')}", show_alert=True)
+
+
+@router.callback_query(lambda c: c.data == "back_to_balance")
+async def back_to_balance(callback: CallbackQuery) -> None:
+    from bot.user_settings import get_credits
+    credits = get_credits(callback.from_user.id)
+    FREE_CREDITS = 20
+    purchased = max(0, credits - FREE_CREDITS)
+    free_left = min(credits, FREE_CREDITS)
+    text = (
+        "━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Ваш баланс: {credits} кредитов</b>\n"
+        f"   🎁 Бесплатные: {free_left}\n"
+        f"   💎 Купленные: {purchased}\n"
+        "━━━━━━━━━━━━━━━━━\n\n"
+        "Выберите пакет для покупки:"
+    )
+    await _safe_edit(callback, text, reply_markup=get_balance_keyboard())
     await callback.answer()
 
 

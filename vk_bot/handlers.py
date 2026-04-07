@@ -451,21 +451,54 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 await edit_msg(f"✅ Модель переключена на {info['label']}\n\nОтправьте запрос ещё раз.")
 
         elif cmd == "buy":
-            from bot.services.freekassa_service import create_payment_url, CREDIT_PACKAGES as FK_PACKAGES
+            from bot.services.freekassa_service import CREDIT_PACKAGES as FK_PACKAGES
+            from vk_bot.keyboards import get_payment_method_keyboard
             pack_key = data.get("pack", "")
             pack = FK_PACKAGES.get(pack_key)
             if not pack:
                 await edit_msg("Неизвестный пакет.")
                 return
-            result = create_payment_url(uid, pack_key)
+            await edit_msg(
+                f"💳 {pack['label']}\n\nВыберите способ оплаты:",
+                get_payment_method_keyboard(pack_key),
+            )
+
+        elif cmd == "pay_method":
+            from bot.services.freekassa_service import create_payment_url, CREDIT_PACKAGES as FK_PACKAGES, PAYMENT_METHODS
+            pack_key = data.get("pack", "")
+            method = data.get("method", "card")
+            pack = FK_PACKAGES.get(pack_key)
+            if not pack:
+                await edit_msg("Неизвестный пакет.")
+                return
+            result = await create_payment_url(uid, pack_key, method)
             if result["ok"]:
+                method_label = PAYMENT_METHODS.get(method, {}).get("label", method)
                 await edit_msg(
-                    f"💳 Оплата: {pack['label']}\n\n"
+                    f"💳 Оплата: {pack['label']}\n"
+                    f"Способ: {method_label}\n\n"
                     f"Перейдите по ссылке для оплаты:\n{result['pay_url']}\n\n"
                     "Кредиты будут начислены автоматически после оплаты."
                 )
             else:
                 await edit_msg(f"Ошибка: {result.get('error', 'неизвестная')}")
+
+        elif cmd == "back_balance":
+            from bot.user_settings import get_credits
+            from vk_bot.keyboards import get_balance_keyboard
+            credits = get_credits(uid)
+            FREE_CREDITS = 20
+            purchased = max(0, credits - FREE_CREDITS)
+            free_left = min(credits, FREE_CREDITS)
+            text = (
+                "━━━━━━━━━━━━━━━━━\n"
+                f"💰 Ваш баланс: {credits} кредитов\n"
+                f"   🎁 Бесплатные: {free_left}\n"
+                f"   💎 Купленные: {purchased}\n"
+                "━━━━━━━━━━━━━━━━━\n\n"
+                "Выберите пакет для покупки:"
+            )
+            await edit_msg(text, get_balance_keyboard())
 
         elif cmd == "creative_generate":
             prompt = _creative_prompts.pop(uid, None)
