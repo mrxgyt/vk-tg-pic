@@ -47,7 +47,7 @@ def _read_template(name: str) -> str:
 
 
 _FALLBACK_TEMPLATES = {
-    "index.html": """<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>PicGenAI</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#08070e;color:#e4e4ef;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}.c{max-width:600px;padding:40px}h1{font-size:2.5em;margin-bottom:16px;background:linear-gradient(135deg,#a78bfa,#60a5fa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}p{color:#8888a8;line-height:1.7;margin-bottom:24px}.btn{display:inline-block;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:600;color:#fff;margin:8px;background:linear-gradient(135deg,#7c3aed,#6366f1)}.btn.vk{background:#4C75A3}</style></head><body><div class="c"><h1>PicGenAI</h1><p>Генерация изображений с помощью ИИ. Работает в Telegram и ВКонтакте.</p><a href="https://t.me/PicGenAI_26_bot" class="btn">Telegram Bot</a><a href="https://vk.ru/picgenai" class="btn vk">ВКонтакте</a></div></body></html>""",
+    "index.html": """<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>PicGenAI — Генерация изображений ИИ</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#08070e;color:#e4e4ef;min-height:100vh}a{color:#a78bfa;text-decoration:none}.header{text-align:center;padding:60px 20px 40px}.header h1{font-size:2.8em;margin-bottom:12px;background:linear-gradient(135deg,#a78bfa,#60a5fa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.header p{color:#8888a8;font-size:1.1em;line-height:1.7;max-width:600px;margin:0 auto 28px}.buttons{display:flex;gap:16px;justify-content:center;flex-wrap:wrap}.btn{display:inline-block;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:600;color:#fff;font-size:1em}.btn.tg{background:linear-gradient(135deg,#7c3aed,#6366f1)}.btn.vk{background:#4C75A3}.section{max-width:800px;margin:0 auto;padding:40px 20px}.section h2{font-size:1.6em;margin-bottom:20px;color:#c4b5fd}.services{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;margin-bottom:40px}.service-card{background:rgba(255,255,255,.03);border:1px solid rgba(167,139,250,.15);border-radius:16px;padding:24px;text-align:center}.service-card .price{font-size:1.8em;font-weight:700;color:#a78bfa;margin:8px 0}.service-card .credits{font-size:1.1em}.service-card .desc{color:#8888a8;font-size:.9em}.contacts{background:rgba(255,255,255,.03);border:1px solid rgba(167,139,250,.1);border-radius:16px;padding:28px;margin-bottom:40px}.contacts p{color:#c4c4d8;line-height:1.8}.footer{border-top:1px solid rgba(255,255,255,.06);padding:30px 20px;text-align:center;max-width:800px;margin:0 auto}.footer-links{display:flex;flex-wrap:wrap;justify-content:center;gap:12px 24px;margin-bottom:16px}.footer-links a{color:#8888a8;font-size:.9em}.footer .copy{color:#555;font-size:.85em}</style></head><body><div class="header"><h1>PicGenAI</h1><p>Сервис генерации изображений с помощью искусственного интеллекта. Создавайте уникальные картинки по текстовому описанию прямо в Telegram и ВКонтакте.</p><div class="buttons"><a href="https://t.me/PicGenAI_26_bot" class="btn tg">Telegram Bot</a><a href="https://vk.ru/picgenai" class="btn vk">ВКонтакте</a></div></div><div class="section"><h2>Услуги и цены</h2><div class="services"><div class="service-card"><div class="credits">30 кредитов</div><div class="price">99 ₽</div><div class="desc">Для первого знакомства</div></div><div class="service-card"><div class="credits">100 кредитов</div><div class="price">299 ₽</div><div class="desc">Оптимальный выбор</div></div><div class="service-card"><div class="credits">200 кредитов</div><div class="price">549 ₽</div><div class="desc">Максимум возможностей</div></div></div><p style="color:#8888a8;font-size:.9em;text-align:center;margin-bottom:40px">При регистрации начисляется 20 бесплатных кредитов. 1 генерация = 1 кредит, генерация в 4K = 2 кредита.</p><h2>Контакты</h2><div class="contacts"><p><strong>Владелец сервиса:</strong> Худайбердиев Гайрат</p><p><strong>Email:</strong> <a href="mailto:mistermackalister@gmail.com">mistermackalister@gmail.com</a></p><p><strong>Телефон:</strong> <a href="tel:+79503183091">+7 (950) 318-30-91</a></p><p><strong>Поддержка:</strong> <a href="https://t.me/ShadowsockTM">@ShadowsockTM</a> (Telegram)</p></div></div><div class="footer"><div class="footer-links"><a href="/offer">Договор оферты</a><a href="/privacy">Политика конфиденциальности</a><a href="/consent">Согласие на обработку данных</a><a href="/refund">Условия возврата</a></div><div class="copy">© 2025–2026 PicGenAI. Все права защищены.</div></div></body></html>""",
     "success.html": """<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Оплата успешна</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#08070e;color:#e4e4ef;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}.c{max-width:440px;padding:48px 40px;background:rgba(255,255,255,.03);border:1px solid rgba(52,211,153,.2);border-radius:24px}h1{color:#34d399;margin:16px 0}p{color:#8888a8;line-height:1.7}</style></head><body><div class="c"><h1>Оплата прошла успешно!</h1><p>Кредиты начислены. Вернитесь в бота.</p><p><a href="https://t.me/PicGenAI_26_bot" style="color:#a78bfa">Вернуться в бота</a></p></div></body></html>""",
     "fail.html": """<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Ошибка оплаты</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#08070e;color:#e4e4ef;min-height:100vh;display:flex;align-items:center;justify-content:center;text-align:center}.c{max-width:440px;padding:48px 40px;background:rgba(255,255,255,.03);border:1px solid rgba(248,113,113,.2);border-radius:24px}h1{color:#f87171;margin:16px 0}p{color:#8888a8;line-height:1.7}</style></head><body><div class="c"><h1>Оплата не прошла</h1><p>Платёж не был завершён. Попробуйте ещё раз.</p><p><a href="https://t.me/PicGenAI_26_bot" style="color:#a78bfa">Вернуться в бота</a></p></div></body></html>""",
 }
@@ -77,6 +77,26 @@ async def handle_success(request: web.Request) -> web.Response:
 
 async def handle_fail(request: web.Request) -> web.Response:
     html = _read_template("fail.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def handle_offer(request: web.Request) -> web.Response:
+    html = _read_template("offer.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def handle_privacy(request: web.Request) -> web.Response:
+    html = _read_template("privacy.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def handle_consent(request: web.Request) -> web.Response:
+    html = _read_template("consent.html")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def handle_refund_page(request: web.Request) -> web.Response:
+    html = _read_template("refund.html")
     return web.Response(text=html, content_type="text/html")
 
 
@@ -274,6 +294,10 @@ def create_web_app() -> web.Application:
     app.router.add_get("/shop-verification-WG76VJD7xl.txt", handle_verification)
     app.router.add_get("/payment/success", handle_success)
     app.router.add_get("/payment/fail", handle_fail)
+    app.router.add_get("/offer", handle_offer)
+    app.router.add_get("/privacy", handle_privacy)
+    app.router.add_get("/consent", handle_consent)
+    app.router.add_get("/refund", handle_refund_page)
     app.router.add_post("/webhook/pally", handle_webhook)
     app.router.add_post("/webhook/pally/refund", handle_refund)
     app.router.add_post("/webhook/pally/chargeback", handle_chargeback)
