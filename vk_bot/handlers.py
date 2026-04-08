@@ -322,6 +322,19 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
 
         await message.answer(text, keyboard=get_balance_keyboard())
 
+    @bot.on.message(text=["/info", "info", "Info", "📁 Документы"])
+    async def cmd_info(message: Message):
+        BASE = "https://www.vk-tg-picgenai.ru"
+        text = (
+            "📁 Правовые документы и условия использования:\n\n"
+            "Вы можете ознакомиться с нашими документами по ссылкам ниже:\n\n"
+            f"📁 ПУБЛИЧНАЯ ОФЕРТА:\n{BASE}/offer\n\n"
+            f"📁 Политика обработки данных:\n{BASE}/privacy\n\n"
+            f"✅ Согласие на обработку:\n{BASE}/consent\n\n"
+            f"💰 Условия возврата:\n{BASE}/refund"
+        )
+        await message.answer(text)
+
     @bot.on.message(text=list(IDEAS_TEXTS))
     async def cmd_ideas(message: Message):
         uid = message.from_id

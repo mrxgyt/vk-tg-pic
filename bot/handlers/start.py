@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from aiogram import Router
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.keyboards import (
     BTN_MENU,
@@ -132,6 +132,24 @@ async def cmd_balance(message: Message) -> None:
     )
 
     await message.answer(text, parse_mode="HTML", reply_markup=get_balance_keyboard())
+
+
+@router.message(Command("info"))
+async def cmd_info(message: Message) -> None:
+    BASE = "https://www.vk-tg-picgenai.ru"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📁 ПУБЛИЧНАЯ ОФЕРТА", url=f"{BASE}/offer")],
+        [InlineKeyboardButton(text="📁 Политика обработки данных", url=f"{BASE}/privacy")],
+        [InlineKeyboardButton(text="✅ Согласие на обработку", url=f"{BASE}/consent")],
+        [InlineKeyboardButton(text="💰 Условия возврата", url=f"{BASE}/refund")],
+        [InlineKeyboardButton(text="📁 Назад", callback_data="back_to_settings")],
+    ])
+    await message.answer(
+        "📁 <b>Правовые документы и условия использования:</b>\n\n"
+        "Вы можете ознакомиться с нашими документами по ссылкам ниже:",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
 
 
 @router.message(Command("cancel"))
