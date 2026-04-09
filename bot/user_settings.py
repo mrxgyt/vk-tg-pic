@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = Path(os.getenv("SETTINGS_FILE", "telegram-bot/data/user_settings.json"))
 
-FREE_CREDITS = 20
+FREE_CREDITS = 5
 
 _PERSISTENT_KEYS = {
     "model", "send_mode", "resolution", "aspect_ratio", "thinking_level",
