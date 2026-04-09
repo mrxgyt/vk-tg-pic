@@ -16,6 +16,8 @@ from bot.user_settings import (
     get_user_settings, save_user_settings, increment_generations,
     AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
     is_blocked, has_credits, FREE_CREDITS,
+    has_chat_quota, increment_chat_count,
+    get_chat_daily_count, get_chat_daily_limit,
 )
 from bot.keyboards import ASPECT_RATIOS
 from core.exceptions import BotError, QuotaExceededError, SafetyFilterError
@@ -598,6 +600,18 @@ async def _handle_vk_chat_message(
     bot: Bot, vertex_service: VertexAIService,
     uid: int, peer_id: int, message: Any,
 ):
+    if not has_chat_quota(uid):
+        limit = get_chat_daily_limit(uid)
+        await bot.api.messages.send(
+            peer_id=peer_id, random_id=0,
+            message=(
+                f"⛔ Лимит чата на сегодня исчерпан ({limit} запросов).\n\n"
+                "Лимит сбрасывается каждую ночь в 00:00. "
+                "Пополните баланс чтобы увеличить дневной лимит."
+            ),
+        )
+        return
+
     history = _chat_sessions[uid]
     text = (message.text or "").strip()
 
@@ -688,6 +702,7 @@ async def _handle_vk_chat_message(
         if len(history) > 42:
             _chat_sessions[uid] = history[:2] + history[-40:]
 
+        increment_chat_count(uid)
         cleaned = _strip_md(response)
         vk_chunks: list[str] = []
         tmp = cleaned

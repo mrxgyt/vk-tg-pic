@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -292,3 +293,41 @@ def pop_last_menu(user_id: int) -> tuple[int, int] | None:
         s["last_menu_message_id"] = None
         return (chat_id, msg_id)
     return None
+
+
+# ── Chat daily request limits ─────────────────────────────────────────────────
+# uid → (count_today, date_of_count)
+_chat_daily: dict[int, tuple[int, date]] = {}
+
+CHAT_MAX_PER_DAY = 500
+
+
+def get_chat_daily_limit(user_id: int) -> int:
+    """Daily chat request limit = min(user credits, CHAT_MAX_PER_DAY)."""
+    credits = get_user_settings(user_id).get("credits", FREE_CREDITS)
+    return min(credits, CHAT_MAX_PER_DAY)
+
+
+def get_chat_daily_count(user_id: int) -> int:
+    """Return how many chat requests the user has made today."""
+    entry = _chat_daily.get(user_id)
+    if entry is None or entry[1] != date.today():
+        return 0
+    return entry[0]
+
+
+def has_chat_quota(user_id: int) -> bool:
+    """True if the user can still send a chat message today."""
+    return get_chat_daily_count(user_id) < get_chat_daily_limit(user_id)
+
+
+def increment_chat_count(user_id: int) -> int:
+    """Record one chat request for today and return the new count."""
+    today = date.today()
+    entry = _chat_daily.get(user_id)
+    if entry is None or entry[1] != today:
+        count = 1
+    else:
+        count = entry[0] + 1
+    _chat_daily[user_id] = (count, today)
+    return count

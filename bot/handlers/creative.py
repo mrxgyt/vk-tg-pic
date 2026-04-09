@@ -20,6 +20,10 @@ from aiogram.types import Message
 
 from bot.keyboards import BTN_CHAT, get_persistent_keyboard
 from bot.services.vertex_ai_service import VertexAIService
+from bot.user_settings import (
+    has_chat_quota, increment_chat_count,
+    get_chat_daily_count, get_chat_daily_limit,
+)
 
 logger = logging.getLogger(__name__)
 router = Router(name="creative")
@@ -337,6 +341,16 @@ async def chat_message(message: Message, vertex_service: VertexAIService) -> Non
     if uid not in _sessions:
         return
 
+    if not has_chat_quota(uid):
+        limit = get_chat_daily_limit(uid)
+        await message.answer(
+            f"⛔ Лимит чата на сегодня исчерпан ({limit} запросов).\n\n"
+            "Лимит сбрасывается каждую ночь в 00:00. "
+            "Пополните баланс чтобы увеличить дневной лимит.",
+            parse_mode=None,
+        )
+        return
+
     thinking_msg = await message.answer("💭 Думаю.")
     stop_event = asyncio.Event()
     anim_task = asyncio.create_task(_animate_thinking(thinking_msg, stop_event))
@@ -371,6 +385,7 @@ async def chat_message(message: Message, vertex_service: VertexAIService) -> Non
         if len(_sessions[uid]) > 42:
             _sessions[uid] = _sessions[uid][:2] + _sessions[uid][-40:]
 
+        increment_chat_count(uid)
         formatted = _md_to_tg_html(response)
         chunks = _split_html(formatted, 4096)
 
