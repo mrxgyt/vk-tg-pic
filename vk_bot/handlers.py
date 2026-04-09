@@ -295,21 +295,35 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         settings = get_user_settings(uid)
         credits = settings.get("credits", FREE_CREDITS)
         generations = settings.get("generations_count", 0)
+        chat_used = get_chat_daily_count(uid)
+        chat_limit = get_chat_daily_limit(uid)
 
         purchased = max(0, credits - FREE_CREDITS) if credits > FREE_CREDITS else 0
         free_left = min(credits, FREE_CREDITS)
 
-        text = "💰 Ваш баланс\n\n"
-        text += f"🔋 Всего кредитов: {credits}\n"
+        lines = ["💰 Ваш баланс", ""]
+        lines.append("┌─────────────────────")
+        lines.append(f"│ 🔋 Кредитов: {credits}")
         if purchased > 0:
-            text += f"💎 Купленные: {purchased}\n"
-            text += f"🎁 Бесплатные: {free_left}\n"
+            lines.append(f"│ 💎 Купленные: {purchased}")
+            lines.append(f"│ 🎁 Бесплатные: {free_left}")
         else:
-            text += f"🎁 Бесплатные: {free_left} из {FREE_CREDITS}\n"
-        text += f"🎨 Сгенерировано: {generations}\n\n"
-        text += "Выберите пакет для пополнения:"
+            lines.append(f"│ 🎁 Бесплатные: {free_left} из {FREE_CREDITS}")
+        lines.append(f"│ 🎨 Сгенерировано: {generations}")
+        lines.append("└─────────────────────")
+        lines.append("")
+        lines.append("📋 Стоимость генерации:")
+        lines.append("▫️ Фото Full HD и ниже — 1 кредит")
+        lines.append("▫️ Фото 4K — 2 кредита")
+        lines.append("")
+        lines.append("💬 Чат с ИИ (в день):")
+        lines.append(f"▫️ Использовано: {chat_used} из {chat_limit}")
+        lines.append("▫️ Лимит = кол-во кредитов (макс. 500)")
+        lines.append("▫️ Сбрасывается каждую ночь в 00:00")
+        lines.append("")
+        lines.append("💳 Выберите пакет для пополнения:")
 
-        await message.answer(text, keyboard=get_balance_keyboard())
+        await message.answer("\n".join(lines), keyboard=get_balance_keyboard())
 
     @bot.on.message(text=["/info", "info", "Info", "📁 Документы"])
     async def cmd_info(message: Message):
