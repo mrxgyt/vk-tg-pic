@@ -27,7 +27,7 @@ from bot.user_settings import (
     user_settings, get_user_settings, set_last_menu, save_user_settings,
     AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
 )
-from bot.services.freekassa_service import create_payment_url, CREDIT_PACKAGES
+from bot.services.lava_service import create_payment_url, CREDIT_PACKAGES
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks")
@@ -241,7 +241,7 @@ async def buy_credits(callback: CallbackQuery) -> None:
         await callback.answer("Неизвестный пакет")
         return
 
-    result = create_payment_url(callback.from_user.id, pack_key)
+    result = await create_payment_url(callback.from_user.id, pack_key)
     if result["ok"]:
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup(inline_keyboard=[

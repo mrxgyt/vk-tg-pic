@@ -288,6 +288,66 @@ def _credit_from_order_id(order_id: str, packages: dict | None = None) -> None:
         logger.warning("Unexpected order_id format: %s", order_id)
 
 
+async def handle_lava_webhook(request: web.Request) -> web.Response:
+    from bot.services.lava_service import verify_webhook_sign, CREDIT_PACKAGES as LAVA_PACKAGES
+
+    try:
+        data = await request.json()
+    except Exception:
+        logger.error("Lava webhook: cannot parse body")
+        return web.Response(text="BAD REQUEST", status=400)
+
+    logger.info("Lava webhook received: %s", json.dumps(data, ensure_ascii=False))
+
+    webhook_type = data.get("type")
+    if webhook_type != 1:
+        return web.Response(text="OK", status=200)
+
+    invoice_id = str(data.get("invoice_id", ""))
+    order_id = str(data.get("order_id", ""))
+    status = data.get("status", "")
+    amount = str(data.get("amount", ""))
+    pay_time = str(data.get("pay_time", ""))
+    received_sign = str(data.get("sign", ""))
+
+    if received_sign and invoice_id and amount and pay_time:
+        if not verify_webhook_sign(invoice_id, amount, pay_time, received_sign):
+            logger.warning("Lava webhook: invalid signature")
+            return web.Response(text="INVALID SIGN", status=403)
+
+    if status != "success" or not order_id:
+        return web.Response(text="OK", status=200)
+
+    if _db.is_available():
+        stored = _db.get_payment(order_id)
+        if stored:
+            if stored["status"] == "success":
+                logger.info("Lava: order %s already completed — skipping", order_id)
+                return web.Response(text="OK", status=200)
+            if not _db.complete_payment(order_id, invoice_id):
+                logger.info("Lava: order %s race condition — skipping", order_id)
+                return web.Response(text="OK", status=200)
+            pack = LAVA_PACKAGES.get(stored["pack_key"]) or CREDIT_PACKAGES.get(stored["pack_key"])
+            if pack:
+                new_balance = add_credits(stored["user_id"], pack["credits"])
+                logger.info(
+                    "Lava credits added: user=%s pack=%s credits=+%d balance=%d",
+                    stored["user_id"], stored["pack_key"], pack["credits"], new_balance,
+                )
+        else:
+            if not _db.mark_order_processed_memory(f"lava_{order_id}"):
+                logger.info("Lava duplicate in-memory webhook for %s — skipping", order_id)
+                return web.Response(text="OK", status=200)
+            _credit_from_order_id(order_id, LAVA_PACKAGES)
+    else:
+        if not _db.mark_order_processed_memory(f"lava_{order_id}"):
+            logger.info("Lava duplicate in-memory webhook for %s — skipping", order_id)
+            return web.Response(text="OK", status=200)
+        _credit_from_order_id(order_id, LAVA_PACKAGES)
+
+    return web.Response(text="OK", status=200)
+
+
 def create_web_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", handle_index)
@@ -298,6 +358,7 @@ def create_web_app() -> web.Application:
     app.router.add_get("/privacy", handle_privacy)
     app.router.add_get("/consent", handle_consent)
     app.router.add_get("/refund", handle_refund_page)
+    app.router.add_post("/webhook/lava", handle_lava_webhook)
     app.router.add_post("/webhook/pally", handle_webhook)
     app.router.add_post("/webhook/pally/refund", handle_refund)
     app.router.add_post("/webhook/pally/chargeback", handle_chargeback)
