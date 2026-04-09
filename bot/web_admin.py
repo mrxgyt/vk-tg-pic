@@ -72,14 +72,16 @@ def _require_auth(fn):
 
 def _layout(title: str, content: str, active: str = "") -> str:
     nav_items = [
-        ("dashboard", "/admin/dashboard", "📊 Дашборд"),
-        ("users",     "/admin/users",     "👥 Пользователи"),
-        ("payments",  "/admin/payments",  "💳 Платежи"),
+        ("dashboard", "/admin/dashboard", "📊", "Дашборд"),
+        ("users",     "/admin/users",     "👥", "Пользователи"),
+        ("payments",  "/admin/payments",  "💳", "Платежи"),
     ]
-    nav_html = ""
-    for key, href, label in nav_items:
-        cls = "nav-link active" if active == key else "nav-link"
-        nav_html += f'<a href="{href}" class="{cls}">{label}</a>\n'
+    sidebar_nav = ""
+    bottom_nav = ""
+    for key, href, icon, label in nav_items:
+        active_cls = " active" if active == key else ""
+        sidebar_nav += f'<a href="{href}" class="nav-link{active_cls}"><span class="nav-icon">{icon}</span><span class="nav-label">{label}</span></a>\n'
+        bottom_nav += f'<a href="{href}" class="bot-link{active_cls}"><span>{icon}</span><span class="bot-label">{label}</span></a>\n'
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -95,33 +97,40 @@ def _layout(title: str, content: str, active: str = "") -> str:
     --green:#34d399;--red:#f87171;--yellow:#fbbf24;--orange:#fb923c;
   }}
   body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-    background:var(--bg);color:var(--text);min-height:100vh;display:flex}}
+    background:var(--bg);color:var(--text);min-height:100vh;display:flex;
+    flex-direction:column}}
   a{{color:var(--accent);text-decoration:none}}
   a:hover{{opacity:.8}}
-  /* Sidebar */
-  .sidebar{{width:220px;min-height:100vh;background:var(--surface);
-    border-right:1px solid var(--border);padding:24px 0;display:flex;
-    flex-direction:column;flex-shrink:0}}
+
+  /* ── Desktop layout ── */
+  .layout{{display:flex;flex:1;min-height:0}}
+  .sidebar{{width:220px;background:var(--surface);border-right:1px solid var(--border);
+    padding:24px 0;display:flex;flex-direction:column;flex-shrink:0}}
   .sidebar-logo{{padding:0 20px 24px;font-size:1.15em;font-weight:700;
     background:linear-gradient(135deg,var(--accent),var(--accent2));
-    -webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-  .nav-link{{display:block;padding:10px 20px;color:var(--muted);
-    font-size:.95em;border-left:3px solid transparent;transition:.15s}}
-  .nav-link:hover{{color:var(--text);background:rgba(167,139,250,.06)}}
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+    white-space:nowrap;overflow:hidden}}
+  .nav-link{{display:flex;align-items:center;gap:10px;padding:10px 20px;
+    color:var(--muted);font-size:.95em;border-left:3px solid transparent;
+    transition:.15s;white-space:nowrap}}
+  .nav-link:hover{{color:var(--text);background:rgba(167,139,250,.06);opacity:1}}
   .nav-link.active{{color:var(--accent);border-left-color:var(--accent);
     background:rgba(167,139,250,.08)}}
+  .nav-icon{{font-size:1.1em;flex-shrink:0}}
   .sidebar-bottom{{margin-top:auto;padding:20px}}
   .logout-btn{{display:block;padding:9px 16px;background:rgba(248,113,113,.1);
     border:1px solid rgba(248,113,113,.2);border-radius:8px;color:var(--red);
     text-align:center;font-size:.9em}}
   .logout-btn:hover{{background:rgba(248,113,113,.2);opacity:1}}
-  /* Main */
-  .main{{flex:1;padding:32px;overflow-x:auto}}
+
+  /* ── Main content ── */
+  .main{{flex:1;padding:32px;overflow-x:auto;min-width:0}}
   .page-title{{font-size:1.6em;font-weight:700;margin-bottom:24px;
     background:linear-gradient(135deg,var(--accent),var(--accent2));
     -webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-  /* Cards */
-  .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+
+  /* ── Cards ── */
+  .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
     gap:16px;margin-bottom:28px}}
   .card{{background:var(--surface);border:1px solid var(--border);
     border-radius:14px;padding:20px}}
@@ -132,31 +141,40 @@ def _layout(title: str, content: str, active: str = "") -> str:
   .card-value.blue{{color:var(--accent2)}}
   .card-value.yellow{{color:var(--yellow)}}
   .card-value.red{{color:var(--red)}}
-  /* Tables */
+
+  /* ── Tables ── */
   .table-wrap{{background:var(--surface);border:1px solid var(--border);
-    border-radius:14px;overflow:auto}}
+    border-radius:14px;overflow:auto;-webkit-overflow-scrolling:touch}}
   table{{width:100%;border-collapse:collapse;font-size:.9em}}
   thead th{{padding:12px 16px;text-align:left;color:var(--muted);
     font-weight:600;font-size:.8em;text-transform:uppercase;letter-spacing:.05em;
-    border-bottom:1px solid var(--border)}}
-  tbody td{{padding:11px 16px;border-bottom:1px solid rgba(255,255,255,.04)}}
+    border-bottom:1px solid var(--border);white-space:nowrap}}
+  tbody td{{padding:11px 16px;border-bottom:1px solid rgba(255,255,255,.04);
+    white-space:nowrap}}
   tbody tr:last-child td{{border-bottom:none}}
   tbody tr:hover{{background:rgba(167,139,250,.04)}}
   .badge{{display:inline-block;padding:3px 9px;border-radius:20px;
-    font-size:.78em;font-weight:600}}
+    font-size:.78em;font-weight:600;white-space:nowrap}}
   .badge-green{{background:rgba(52,211,153,.12);color:var(--green)}}
   .badge-red{{background:rgba(248,113,113,.12);color:var(--red)}}
   .badge-yellow{{background:rgba(251,191,36,.12);color:var(--yellow)}}
   .badge-blue{{background:rgba(96,165,250,.12);color:var(--accent2)}}
   .badge-purple{{background:rgba(167,139,250,.12);color:var(--accent)}}
-  /* Search & toolbar */
+
+  /* ── Toolbar ── */
   .toolbar{{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center}}
   .search-input{{background:var(--surface);border:1px solid var(--border);
     border-radius:8px;padding:8px 14px;color:var(--text);font-size:.9em;
-    width:260px;outline:none}}
+    min-width:0;flex:1 1 200px;outline:none}}
   .search-input:focus{{border-color:var(--accent)}}
+  select{{background:var(--surface);border:1px solid var(--border);
+    border-radius:8px;padding:8px 12px;color:var(--text);font-size:.9em;
+    flex:1 1 140px;min-width:0}}
+
+  /* ── Buttons ── */
   .btn{{display:inline-block;padding:8px 18px;border-radius:8px;border:none;
-    cursor:pointer;font-size:.9em;font-weight:600;transition:.15s}}
+    cursor:pointer;font-size:.9em;font-weight:600;transition:.15s;
+    white-space:nowrap;text-align:center}}
   .btn-primary{{background:linear-gradient(135deg,#7c3aed,#6366f1);color:#fff}}
   .btn-primary:hover{{opacity:.85}}
   .btn-danger{{background:rgba(248,113,113,.15);color:var(--red);
@@ -169,63 +187,101 @@ def _layout(title: str, content: str, active: str = "") -> str:
     border:1px solid var(--border)}}
   .btn-muted:hover{{background:rgba(255,255,255,.1);color:var(--text)}}
   .btn-sm{{padding:5px 12px;font-size:.82em}}
-  /* Section heading */
+
+  /* ── Detail grid ── */
   .section-heading{{font-size:1.05em;font-weight:600;color:var(--accent);
     margin:28px 0 14px}}
-  /* User detail */
-  .detail-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
-    gap:16px;margin-bottom:24px}}
+  .detail-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+    gap:12px;margin-bottom:24px}}
   .detail-card{{background:var(--surface);border:1px solid var(--border);
-    border-radius:12px;padding:18px}}
+    border-radius:12px;padding:16px}}
   .detail-card-label{{color:var(--muted);font-size:.8em;margin-bottom:4px}}
-  .detail-card-value{{font-size:1.1em;font-weight:600}}
-  /* Actions row */
+  .detail-card-value{{font-size:1.05em;font-weight:600;word-break:break-all}}
   .actions-row{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px}}
-  /* Modal */
-  .modal-overlay{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);
-    z-index:100;align-items:center;justify-content:center}}
+
+  /* ── Modal ── */
+  .modal-overlay{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);
+    z-index:100;align-items:center;justify-content:center;padding:16px}}
   .modal-overlay.open{{display:flex}}
   .modal{{background:#14122a;border:1px solid var(--border);border-radius:16px;
-    padding:28px;min-width:300px;max-width:420px;width:100%}}
+    padding:24px;width:100%;max-width:400px}}
   .modal h3{{margin-bottom:16px;font-size:1.1em}}
   .modal input{{width:100%;background:var(--surface);border:1px solid var(--border);
     border-radius:8px;padding:9px 14px;color:var(--text);font-size:.95em;
     margin-bottom:14px;outline:none}}
   .modal input:focus{{border-color:var(--accent)}}
   .modal-btns{{display:flex;gap:10px;justify-content:flex-end}}
-  /* Pagination */
+
+  /* ── Pagination ── */
   .pagination{{display:flex;gap:6px;margin-top:16px;flex-wrap:wrap}}
   .page-btn{{padding:6px 12px;border-radius:7px;background:var(--surface);
-    border:1px solid var(--border);color:var(--muted);font-size:.85em;cursor:pointer}}
+    border:1px solid var(--border);color:var(--muted);font-size:.85em}}
   .page-btn:hover,.page-btn.cur{{background:rgba(167,139,250,.15);color:var(--accent);
     border-color:rgba(167,139,250,.4)}}
-  /* Alert */
+
+  /* ── Alert ── */
   .alert{{padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:.9em}}
   .alert-success{{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.2);
     color:var(--green)}}
   .alert-error{{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.2);
     color:var(--red)}}
-  /* Responsive */
-  @media(max-width:700px){{
-    .sidebar{{width:60px}}
-    .sidebar-logo,.nav-link span,.sidebar-bottom .logout-btn span{{display:none}}
-    .nav-link{{text-align:center;font-size:1.3em;padding:12px}}
-    .main{{padding:16px}}
+
+  /* ── Bottom nav (mobile only) ── */
+  .bottom-nav{{display:none}}
+
+  /* ── Mobile ── */
+  @media(max-width:680px){{
+    .sidebar{{display:none}}
+    .bottom-nav{{
+      display:flex;position:fixed;bottom:0;left:0;right:0;z-index:50;
+      background:var(--surface);border-top:1px solid var(--border);
+      padding:6px 0 env(safe-area-inset-bottom,6px)
+    }}
+    .bot-link{{
+      flex:1;display:flex;flex-direction:column;align-items:center;
+      gap:3px;padding:6px 4px;color:var(--muted);font-size:.7em;
+      border-top:2px solid transparent;transition:.15s
+    }}
+    .bot-link>span:first-child{{font-size:1.4em;line-height:1}}
+    .bot-link.active{{color:var(--accent);border-top-color:var(--accent)}}
+    .bot-logout{{
+      flex:1;display:flex;flex-direction:column;align-items:center;
+      gap:3px;padding:6px 4px;color:var(--red);font-size:.7em
+    }}
+    .bot-logout>span:first-child{{font-size:1.4em;line-height:1}}
+    .main{{padding:16px;padding-bottom:80px}}
+    .page-title{{font-size:1.3em}}
+    .cards{{grid-template-columns:repeat(2,1fr);gap:10px}}
+    .card{{padding:14px}}
+    .card-value{{font-size:1.5em}}
+    .detail-grid{{grid-template-columns:repeat(2,1fr)}}
+    .actions-row .btn{{font-size:.82em;padding:7px 12px}}
+    .toolbar{{flex-direction:column;align-items:stretch}}
+    .search-input{{width:100%;flex:none}}
+    select{{width:100%;flex:none}}
   }}
 </style>
 </head>
 <body>
-<nav class="sidebar">
-  <div class="sidebar-logo">⚡ PicGenAI</div>
-  {nav_html}
-  <div class="sidebar-bottom">
-    <a href="/admin/logout" class="logout-btn">🚪 Выйти</a>
-  </div>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-logo">⚡ PicGenAI</div>
+    {sidebar_nav}
+    <div class="sidebar-bottom">
+      <a href="/admin/logout" class="logout-btn">🚪 Выйти</a>
+    </div>
+  </nav>
+  <main class="main">
+    <div class="page-title">{title}</div>
+    {content}
+  </main>
+</div>
+<nav class="bottom-nav">
+  {bottom_nav}
+  <a href="/admin/logout" class="bot-logout">
+    <span>🚪</span><span>Выйти</span>
+  </a>
 </nav>
-<main class="main">
-  <div class="page-title">{title}</div>
-  {content}
-</main>
 </body>
 </html>"""
 
