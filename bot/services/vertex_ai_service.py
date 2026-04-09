@@ -153,6 +153,12 @@ class _BaseSlot:
         self.cooldown_until: float = 0.0
         self.auth_error: bool = False
         self.auth_error_msg: str = ""
+        # Real-time traffic tracking
+        self.active_requests: int = 0    # requests in flight right now
+        self.last_used_at: float = 0.0   # monotonic timestamp of last dispatch
+        self.last_model: str = ""        # which model was last used
+        self.total_ok: int = 0           # total successful requests ever
+        self.total_err: int = 0          # total failed requests ever
         # Per-model sliding-window: { model_name: [timestamps] }
         # Each model has an independent quota on the same API key.
         self._model_request_times: dict[str, list[float]] = {}
@@ -351,10 +357,13 @@ class VertexAIService:
             remaining = max(0.0, slot.cooldown_until - now)
             if slot.auth_error:
                 status = "auth_error"
+            elif slot.active_requests > 0:
+                status = "active"
             elif remaining > 0:
                 status = "cooldown"
             else:
                 status = "ok"
+            last_used_ago = int(now - slot.last_used_at) if slot.last_used_at > 0 else None
             key_masked = api_keys_store.mask_key(slot._api_key) if isinstance(slot, _ApiKeySlot) else None
             sa_name = slot.sa_path.stem if isinstance(slot, _CredSlot) else None
             result.append({
@@ -365,6 +374,11 @@ class VertexAIService:
                 "status": status,
                 "cooldown_remaining": int(remaining),
                 "auth_error_msg": slot.auth_error_msg,
+                "active_requests": slot.active_requests,
+                "last_used_ago": last_used_ago,
+                "last_model": slot.last_model,
+                "total_ok": slot.total_ok,
+                "total_err": slot.total_err,
                 "req_flash": slot.requests_in_window("flash-image"),
                 "req_pro": slot.requests_in_window("pro-image"),
                 "qpm_flash": _qpm_for_model("flash-image"),
@@ -434,6 +448,10 @@ class VertexAIService:
             if slot is not None:
                 # Reserve one quota slot in the per-model sliding window before the call.
                 slot.record_request(model)
+                slot.active_requests += 1
+                slot.last_used_at = time.monotonic()
+                slot.last_model = model
+                _exc_to_raise: Exception | None = None
                 try:
                     logger.info(
                         "Trying '%s' [%d/%d used for %s], prompt='%s'",
@@ -444,22 +462,23 @@ class VertexAIService:
                         current_prompt[:60],
                     )
                     result = await self._call_api(slot, current_prompt, images, model, aspect_ratio, thinking_level)
+                    slot.total_ok += 1
                     return result
                 except Exception as exc:
+                    slot.total_err += 1
                     logger.error(
                         "Slot '%s' error for '%s': %s",
                         slot.label, current_prompt[:60], repr(exc),
                     )
                     if _is_safety_error(exc):
-                        raise SafetyFilterError(str(exc)) from exc
-                    if _is_retryable(exc):
+                        _exc_to_raise = SafetyFilterError(str(exc))
+                    elif _is_retryable(exc):
                         slot.mark_rate_limited()
                         logger.warning(
                             "Slot '%s' returned 429 — 60s cooldown applied, rotating...",
                             slot.label,
                         )
-                        continue
-                    if _is_auth_error(exc):
+                    elif _is_auth_error(exc):
                         slot.reset_client()
                         slot.auth_error = True
                         slot.auth_error_msg = str(exc)[:120]
@@ -467,15 +486,12 @@ class VertexAIService:
                             "Slot '%s' auth error, key invalid — skipping: %s",
                             slot.label, exc,
                         )
-                        continue
-                    if _is_model_error(exc):
+                    elif _is_model_error(exc):
                         logger.warning(
                             "Slot '%s' returned 400, model issue — skipping...",
                             slot.label,
                         )
-                        continue
-                    # Model returned text instead of image — retry once with explicit prompt
-                    if isinstance(exc, GenerationError) and "вернула текст" in str(exc):
+                    elif isinstance(exc, GenerationError) and "вернула текст" in str(exc):
                         if not text_retry_done:
                             text_retry_done = True
                             current_prompt = (
@@ -486,9 +502,14 @@ class VertexAIService:
                                 "Model returned text for '%s', retrying with enhanced prompt...",
                                 prompt[:40],
                             )
-                            continue
-                        raise AmbiguousPromptError(str(exc)) from exc
-                    raise GenerationError(str(exc)) from exc
+                        else:
+                            _exc_to_raise = AmbiguousPromptError(str(exc))
+                    else:
+                        _exc_to_raise = GenerationError(str(exc))
+                finally:
+                    slot.active_requests = max(0, slot.active_requests - 1)
+                if _exc_to_raise is not None:
+                    raise _exc_to_raise
             else:
                 # All slots are at capacity or in cooldown — wait precisely.
                 earliest = self._earliest_ready_at(model)
@@ -590,6 +611,10 @@ class VertexAIService:
 
             if slot is not None:
                 slot.record_request(model)
+                slot.active_requests += 1
+                slot.last_used_at = time.monotonic()
+                slot.last_model = model
+                _chat_exc: Exception | None = None
                 try:
                     logger.info(
                         "Chat: trying '%s' [%d/%d used for %s]",
@@ -599,10 +624,13 @@ class VertexAIService:
                         model,
                     )
                     loop = asyncio.get_running_loop()
-                    return await loop.run_in_executor(
+                    result = await loop.run_in_executor(
                         None, self._sync_chat, slot, contents
                     )
+                    slot.total_ok += 1
+                    return result
                 except Exception as exc:
+                    slot.total_err += 1
                     logger.error("Chat: slot '%s' error: %s", slot.label, repr(exc))
                     if _is_retryable(exc):
                         slot.mark_rate_limited()
@@ -610,21 +638,25 @@ class VertexAIService:
                             "Chat: slot '%s' returned 429 — 60s cooldown, rotating...",
                             slot.label,
                         )
-                        continue
-                    if _is_auth_error(exc):
+                    elif _is_auth_error(exc):
                         slot.reset_client()
+                        slot.auth_error = True
+                        slot.auth_error_msg = str(exc)[:120]
                         logger.warning(
                             "Chat: slot '%s' auth error, key invalid — skipping: %s",
                             slot.label, exc,
                         )
-                        continue
-                    if _is_model_error(exc):
+                    elif _is_model_error(exc):
                         logger.warning(
                             "Chat: slot '%s' returned 400, model issue — skipping",
                             slot.label,
                         )
-                        continue
-                    raise GenerationError(str(exc)) from exc
+                    else:
+                        _chat_exc = GenerationError(str(exc))
+                finally:
+                    slot.active_requests = max(0, slot.active_requests - 1)
+                if _chat_exc is not None:
+                    raise _chat_exc
             else:
                 # All slots busy — wait for the soonest one to become ready
                 earliest = self._earliest_ready_at(model)
