@@ -1,7 +1,17 @@
 import asyncio
+import datetime
 import logging
 import os
 import sys
+
+
+class _MskFormatter(logging.Formatter):
+    """Logging formatter that shows Moscow time (UTC+3) instead of UTC."""
+    _MSK = datetime.timezone(datetime.timedelta(hours=3))
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.datetime.fromtimestamp(record.created, tz=self._MSK)
+        return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
 
 
 def _block_adc() -> None:
@@ -20,15 +30,19 @@ def _block_adc() -> None:
 _block_adc()
 
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, log_level, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(_MskFormatter(
+    fmt="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    stream=sys.stdout,
-)
+))
+_root = logging.getLogger()
+_root.setLevel(getattr(logging, log_level, logging.INFO))
+_root.addHandler(_handler)
 logging.getLogger("aiogram").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logging.getLogger("vkbottle").setLevel(logging.WARNING)
+logging.getLogger("google_genai").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger("start_all")
 
