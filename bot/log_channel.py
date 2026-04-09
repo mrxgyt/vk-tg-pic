@@ -44,17 +44,20 @@ async def log_generation(
     """Send generated image to the log channel via aiogram Bot (TG handler context)."""
     from bot.notify import _tg_bot
     if _tg_bot is None:
+        logger.warning("log_channel: _tg_bot is None — канал не инициализирован")
         return
     try:
         from aiogram.types import BufferedInputFile
+        logger.debug("log_channel: отправляю фото в канал %s", LOG_CHANNEL_ID)
         await _tg_bot.send_photo(
             chat_id=LOG_CHANNEL_ID,
             photo=BufferedInputFile(file=image_bytes, filename="gen.jpg"),
             caption=_caption(prompt, user_id, user_name, platform, model),
             parse_mode="HTML",
         )
+        logger.info("log_channel: фото успешно отправлено в канал %s", LOG_CHANNEL_ID)
     except Exception as exc:
-        logger.debug("log_channel (tg path) failed: %s", exc)
+        logger.warning("log_channel (tg path) failed [channel=%s]: %s", LOG_CHANNEL_ID, exc)
 
 
 async def log_generation_vk(
