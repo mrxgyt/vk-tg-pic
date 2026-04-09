@@ -464,6 +464,7 @@ async def handle_dashboard(request: web.Request) -> web.Response:
 async def handle_users(request: web.Request) -> web.Response:
     q = request.rel_url.query.get("q", "").strip().lower()
     sort = request.rel_url.query.get("sort", "gens")
+    order = request.rel_url.query.get("order", "desc")
     page = max(1, int(request.rel_url.query.get("page", 1)))
     filter_blocked = request.rel_url.query.get("blocked", "")
     filter_platform = request.rel_url.query.get("platform", "")
@@ -482,13 +483,15 @@ async def handle_users(request: web.Request) -> web.Response:
     if filter_platform in ("tg", "vk"):
         users_list = [(uid, u) for uid, u in users_list if u.get("platform") == filter_platform]
 
-    sort_key = {
-        "gens": lambda x: x[1].get("generations_count", 0),
+    sort_keys = {
+        "gens":    lambda x: x[1].get("generations_count", 0),
         "credits": lambda x: x[1].get("credits", 0),
-        "name": lambda x: x[1].get("first_name", "").lower(),
-        "id": lambda x: x[0],
-    }.get(sort, lambda x: x[1].get("generations_count", 0))
-    users_list.sort(key=sort_key, reverse=(sort != "name"))
+        "name":    lambda x: (x[1].get("first_name") or "").lower(),
+        "id":      lambda x: x[0],
+    }
+    sort_fn = sort_keys.get(sort, sort_keys["gens"])
+    reverse = (order == "desc")
+    users_list.sort(key=sort_fn, reverse=reverse)
 
     total = len(users_list)
     total_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
@@ -496,10 +499,25 @@ async def handle_users(request: web.Request) -> web.Response:
     offset = (page - 1) * _PAGE_SIZE
     page_users = users_list[offset: offset + _PAGE_SIZE]
 
-    def sort_link(s):
-        cur_q = f"?q={q}&sort={s}&blocked={filter_blocked}&platform={filter_platform}"
-        arrow = " ▲" if sort == s else ""
-        return f'<a href="{cur_q}" style="color:inherit">{s.upper()}{arrow}</a>'
+    col_labels = {
+        "id": "ID",
+        "name": "Имя",
+        "credits": "Кредиты",
+        "gens": "Генераций",
+    }
+
+    def sort_link(s, label):
+        is_active = sort == s
+        new_order = "asc" if (is_active and order == "desc") else "desc"
+        arrow = (" ▼" if order == "desc" else " ▲") if is_active else ""
+        color = "var(--accent)" if is_active else "var(--muted)"
+        href = f"?q={q}&sort={s}&order={new_order}&blocked={filter_blocked}&platform={filter_platform}"
+        return (
+            f'<a href="{href}" style="color:{color};cursor:pointer;'
+            f'font-weight:{"700" if is_active else "600"};'
+            f'text-decoration:none;white-space:nowrap">'
+            f'{label}{arrow}</a>'
+        )
 
     rows = ""
     for uid, u in page_users:
@@ -515,13 +533,13 @@ async def handle_users(request: web.Request) -> web.Response:
             else '<span class="badge badge-yellow">—</span>'
         )
         blocked_badge = (
-            '<span class="badge badge-red">🚫 Заблокирован</span>' if blocked
+            '<span class="badge badge-red">🚫 Блок</span>' if blocked
             else '<span class="badge badge-green">✓ Активен</span>'
         )
         cred_color = "var(--red)" if credits_ == 0 else "var(--green)" if credits_ > 50 else "var(--yellow)"
 
         rows += f"""<tr>
-          <td style="font-family:monospace;color:var(--muted)">{uid}</td>
+          <td style="font-family:monospace;color:var(--muted);font-size:.85em">{uid}</td>
           <td><a href="/admin/users/{uid}" style="color:var(--text);font-weight:500">{name}</a></td>
           <td>{plat_badge}</td>
           <td style="color:{cred_color};font-weight:600">{credits_}</td>
@@ -536,7 +554,7 @@ async def handle_users(request: web.Request) -> web.Response:
         rows = '<tr><td colspan="7" style="color:#8888a8;text-align:center;padding:20px">Пользователи не найдены</td></tr>'
 
     def page_url(p):
-        return f"?q={q}&sort={sort}&blocked={filter_blocked}&platform={filter_platform}&page={p}"
+        return f"?q={q}&sort={sort}&order={order}&blocked={filter_blocked}&platform={filter_platform}&page={p}"
 
     pages_html = ""
     for p in range(1, total_pages + 1):
@@ -549,19 +567,18 @@ async def handle_users(request: web.Request) -> web.Response:
     filter_opts = f"""
 <form method="get" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
   <input class="search-input" name="q" value="{q}" placeholder="Поиск по имени или ID">
-  <select name="platform" style="background:var(--surface);border:1px solid var(--border);
-    border-radius:8px;padding:8px 12px;color:var(--text);font-size:.9em">
+  <select name="platform">
     <option value="" {"selected" if not filter_platform else ""}>Все платформы</option>
     <option value="tg" {"selected" if filter_platform=="tg" else ""}>Telegram</option>
     <option value="vk" {"selected" if filter_platform=="vk" else ""}>ВКонтакте</option>
   </select>
-  <select name="blocked" style="background:var(--surface);border:1px solid var(--border);
-    border-radius:8px;padding:8px 12px;color:var(--text);font-size:.9em">
+  <select name="blocked">
     <option value="" {"selected" if filter_blocked=="" else ""}>Все статусы</option>
     <option value="0" {"selected" if filter_blocked=="0" else ""}>Активные</option>
     <option value="1" {"selected" if filter_blocked=="1" else ""}>Заблокированные</option>
   </select>
   <input type="hidden" name="sort" value="{sort}">
+  <input type="hidden" name="order" value="{order}">
   <button type="submit" class="btn btn-primary">Найти</button>
   <a href="/admin/users" class="btn btn-muted">Сбросить</a>
 </form>"""
@@ -569,16 +586,18 @@ async def handle_users(request: web.Request) -> web.Response:
     content = f"""
 <div style="margin-bottom:6px;color:var(--muted);font-size:.9em">
   Найдено: <strong style="color:var(--text)">{total}</strong> пользователей
+  &nbsp;·&nbsp; Сортировка: <strong style="color:var(--accent)">{col_labels.get(sort, sort)}</strong>
+  {"▼" if order == "desc" else "▲"}
 </div>
 <div class="toolbar">{filter_opts}</div>
 <div class="table-wrap">
 <table>
   <thead><tr>
-    <th>{sort_link("id")}</th>
-    <th>{sort_link("name")}</th>
+    <th>{sort_link("id", "ID")}</th>
+    <th>{sort_link("name", "Имя")}</th>
     <th>Платформа</th>
-    <th>{sort_link("credits")}</th>
-    <th>{sort_link("gens")}</th>
+    <th>{sort_link("credits", "Кредиты")}</th>
+    <th>{sort_link("gens", "Генераций")}</th>
     <th>Статус</th>
     <th></th>
   </tr></thead>
