@@ -313,7 +313,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         lines.append("└─────────────────────")
         lines.append("")
         lines.append("📋 Стоимость генерации:")
-        lines.append("▫️ Фото Full HD, 2К и ниже — 1 кредит")
+        lines.append("▫️ Фото 2К, Full HD и ниже — 1 кредит")
         lines.append("▫️ Фото 4K — 2 кредита")
         lines.append("")
         lines.append("💬 Чат с ИИ (в день):")

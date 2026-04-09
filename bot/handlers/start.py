@@ -133,7 +133,7 @@ async def cmd_balance(message: Message) -> None:
     lines.append("└─────────────────────")
     lines.append("")
     lines.append("📋 <b>Стоимость генерации:</b>")
-    lines.append("▫️ Фото Full HD, 2К и ниже — <b>1 кредит</b>")
+    lines.append("▫️ Фото 2К, Full HD и ниже — <b>1 кредит</b>")
     lines.append("▫️ Фото 4K — <b>2 кредита</b>")
     lines.append("")
     lines.append("💬 <b>Чат с ИИ (в день):</b>")
