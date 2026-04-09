@@ -745,125 +745,95 @@ _IMG_PAGE_SIZE = 10
 
 def _render_image_gallery(image_logs: list[dict], page: int = 1) -> str:
     """Build the image list (compact table) for a user's generated images."""
-    if not image_logs:
-        return '<div class="img-empty">Генераций пока нет</div>'
+    try:
+        if not image_logs:
+            return '<div class="img-empty">Генераций пока нет</div>'
 
-    total = len(image_logs)
-    start = (page - 1) * _IMG_PAGE_SIZE
-    end = start + _IMG_PAGE_SIZE
-    page_items = image_logs[start:end]
-    has_next = end < total
-    has_prev = page > 1
+        total = len(image_logs)
+        start = (page - 1) * _IMG_PAGE_SIZE
+        end = start + _IMG_PAGE_SIZE
+        page_items = image_logs[start:end]
+        has_next = end < total
+        has_prev = page > 1
 
-    rows = ""
-    for img in page_items:
-        fuid = img["file_unique_id"]
-        prompt_esc = img["prompt"].replace("<", "&lt;").replace('"', "&quot;")
-        dt = _msk(img["created_at"])
-        plat = "📱" if img["platform"] == "tg" else "💙"
-        fp = img["prompt"].replace("'", "\\'").replace("\\n", " ")
-        rows += f"""<tr>
-  <td style="width:56px;padding:6px 8px">
-    <img src="/admin/tg-photo/{fuid}" loading="lazy"
-         style="width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;display:block"
-         onclick="openLightbox('/admin/tg-photo/{fuid}','{fp[:160]}','{dt}')"
-         onerror="this.style.opacity='.3'">
-  </td>
-  <td style="font-size:.85em;max-width:320px;word-break:break-word;padding:6px 4px">
-    {plat} {prompt_esc[:120]}
-  </td>
-  <td style="white-space:nowrap;color:var(--muted);font-size:.78em;padding:6px 8px">{dt}</td>
-  <td style="white-space:nowrap;font-size:.78em;color:#8888a8;padding:6px 8px">{img['model'].split('-')[0] if img.get('model') else '—'}</td>
-</tr>"""
+        rows = ""
+        for img in page_items:
+            fuid = img["file_unique_id"]
+            prompt_esc = (img.get("prompt") or "").replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
+            dt = _msk(img.get("created_at", ""))
+            plat = "📱" if img.get("platform") == "tg" else "💙"
+            mdl = (img.get("model") or "").split("-")[0] or "—"
+            # Use data-* attributes to avoid any JS-injection via prompt text
+            rows += (
+                f'<tr>'
+                f'<td style="width:56px;padding:6px 8px">'
+                f'<img src="/admin/tg-photo/{fuid}" loading="lazy"'
+                f' data-fuid="{fuid}" data-dt="{dt}"'
+                f' style="width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;display:block"'
+                f' onclick="openImg(this)" onerror="this.style.opacity=\'.3\'"></td>'
+                f'<td style="font-size:.85em;max-width:320px;word-break:break-word;padding:6px 4px">{plat} {prompt_esc[:120]}</td>'
+                f'<td style="white-space:nowrap;color:var(--muted);font-size:.78em;padding:6px 8px">{dt}</td>'
+                f'<td style="white-space:nowrap;font-size:.78em;color:#8888a8;padding:6px 8px">{mdl}</td>'
+                f'</tr>'
+            )
 
-    pagination = ""
-    if has_prev or has_next:
-        pagination = '<div style="display:flex;gap:8px;margin-top:10px">'
-        if has_prev:
-            pagination += f'<button class="btn btn-muted btn-sm" onclick="loadImgPage({page-1})">← Назад</button>'
-        pagination += f'<span style="align-self:center;color:var(--muted);font-size:.85em">{start+1}–{min(end,total)} из {total}</span>'
-        if has_next:
-            pagination += f'<button class="btn btn-muted btn-sm" onclick="loadImgPage({page+1})">Далее →</button>'
-        pagination += '</div>'
+        pagination = ""
+        if has_prev or has_next:
+            pagination = '<div style="display:flex;gap:8px;margin-top:10px">'
+            if has_prev:
+                pagination += f'<button class="btn btn-muted btn-sm" onclick="loadImgPage({page-1})">← Назад</button>'
+            pagination += f'<span style="align-self:center;color:var(--muted);font-size:.85em">{start+1}–{min(end,total)} из {total}</span>'
+            if has_next:
+                pagination += f'<button class="btn btn-muted btn-sm" onclick="loadImgPage({page+1})">Далее →</button>'
+            pagination += '</div>'
 
-    return f"""<div class="table-wrap" id="img-table-wrap">
-<table>
-  <thead><tr>
-    <th style="width:56px">Фото</th>
-    <th>Промпт</th>
-    <th>Дата</th>
-    <th>Модель</th>
-  </tr></thead>
-  <tbody>{rows}</tbody>
-</table>
-</div>
-<div id="img-pagination">{pagination}</div>
-<div class="lightbox" id="lightbox" onclick="closeLightbox()">
-  <span class="lightbox-close" onclick="closeLightbox()">×</span>
-  <img id="lightbox-img" src="" alt="">
-  <div class="lightbox-caption" id="lightbox-cap"></div>
-</div>
-<script>
-var _imgAllData = {json.dumps(image_logs)};
-var _imgPageSize = {_IMG_PAGE_SIZE};
+        # Safely embed JSON — escape </script> to prevent tag injection
+        safe_json = json.dumps(image_logs, ensure_ascii=False).replace("</", "<\\/")
 
-function toMsk(s) {{
-  if(!s) return '—';
-  var d = new Date(s.endsWith('Z') ? s : s+'Z');
-  d.setHours(d.getHours()+3);
-  var pad = function(n){{ return n.toString().padStart(2,'0'); }};
-  return pad(d.getDate())+'.'+pad(d.getMonth()+1)+'.'+d.getFullYear()+' '+pad(d.getHours())+':'+pad(d.getMinutes());
-}}
-function openLightbox(src, prompt, dt) {{
-  document.getElementById('lightbox-img').src = src;
-  document.getElementById('lightbox-cap').textContent = prompt + (dt ? ' · ' + dt : '');
-  document.getElementById('lightbox').classList.add('open');
-}}
-function closeLightbox() {{
-  document.getElementById('lightbox').classList.remove('open');
-  document.getElementById('lightbox-img').src = '';
-}}
-document.addEventListener('keydown', function(e) {{ if(e.key==='Escape') closeLightbox(); }});
-
-function loadImgPage(page) {{
-  var start = (page-1)*_imgPageSize;
-  var end = start+_imgPageSize;
-  var items = _imgAllData.slice(start, end);
-  var rows = items.map(function(img) {{
-    var fuid = img.file_unique_id;
-    var dt = toMsk(img.created_at);
-    var plat = img.platform === 'tg' ? '📱' : '💙';
-    var prompt = img.prompt.replace(/</g,'&lt;').replace(/"/g,'&quot;');
-    var fp = img.prompt.replace(/'/g,"\\'").replace(/\\n/g,' ');
-    var mdl = img.model ? img.model.split('-')[0] : '—';
-    return '<tr>'
-      + '<td style="width:56px;padding:6px 8px"><img src="/admin/tg-photo/'+fuid+'" loading="lazy"'
-      + ' style="width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;display:block"'
-      + ' onclick="openLightbox(\\'/admin/tg-photo/'+fuid+'\\',\\''+fp.slice(0,160)+'\\',\\''+dt+'\\')"`'
-      + ' onerror="this.style.opacity=\\'.3\\'"></td>'
-      + '<td style="font-size:.85em;max-width:320px;word-break:break-word;padding:6px 4px">'+plat+' '+prompt.slice(0,120)+'</td>'
-      + '<td style="white-space:nowrap;color:var(--muted);font-size:.78em;padding:6px 8px">'+dt+'</td>'
-      + '<td style="white-space:nowrap;font-size:.78em;color:#8888a8;padding:6px 8px">'+mdl+'</td>'
-      + '</tr>';
-  }}).join('');
-
-  document.querySelector('#img-table-wrap tbody').innerHTML = rows;
-
-  var total = _imgAllData.length;
-  var hasPrev = page > 1;
-  var hasNext = end < total;
-  var pg = document.getElementById('img-pagination');
-  var html = '';
-  if(hasPrev || hasNext) {{
-    html = '<div style="display:flex;gap:8px;margin-top:10px">';
-    if(hasPrev) html += '<button class="btn btn-muted btn-sm" onclick="loadImgPage('+(page-1)+')">← Назад</button>';
-    html += '<span style="align-self:center;color:var(--muted);font-size:.85em">'+(start+1)+'–'+Math.min(end,total)+' из '+total+'</span>';
-    if(hasNext) html += '<button class="btn btn-muted btn-sm" onclick="loadImgPage('+(page+1)+')">Далее →</button>';
-    html += '</div>';
-  }}
-  if(pg) pg.innerHTML = html;
-}}
-</script>"""
+        return (
+            '<div class="table-wrap" id="img-table-wrap"><table>'
+            '<thead><tr><th style="width:56px">Фото</th><th>Промпт</th><th>Дата</th><th>Модель</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            f'<div id="img-pagination">{pagination}</div>'
+            '<div class="lightbox" id="lightbox" onclick="closeLightbox()">'
+            '<span class="lightbox-close" onclick="closeLightbox()">×</span>'
+            '<img id="lightbox-img" src="" alt="">'
+            '<div class="lightbox-caption" id="lightbox-cap"></div></div>'
+            f'<script>var _imgData={safe_json};var _pgSz={_IMG_PAGE_SIZE};'
+            'function toMsk(s){if(!s)return"—";var d=new Date(s.endsWith("Z")?s:s+"Z");d.setHours(d.getHours()+3);'
+            'var p=function(n){return String(n).padStart(2,"0")};'
+            'return p(d.getDate())+"."+p(d.getMonth()+1)+"."+d.getFullYear()+" "+p(d.getHours())+":"+p(d.getMinutes());}'
+            'function openLightbox(src,cap){document.getElementById("lightbox-img").src=src;'
+            'document.getElementById("lightbox-cap").textContent=cap;document.getElementById("lightbox").classList.add("open");}'
+            'function openImg(el){openLightbox("/admin/tg-photo/"+el.dataset.fuid,(el.closest("tr").querySelector("td:nth-child(2)").textContent.trim())+" · "+el.dataset.dt);}'
+            'function closeLightbox(){document.getElementById("lightbox").classList.remove("open");document.getElementById("lightbox-img").src="";}'
+            'document.addEventListener("keydown",function(e){if(e.key==="Escape")closeLightbox();});'
+            'function loadImgPage(pg){'
+            'var s=(pg-1)*_pgSz,e=s+_pgSz,items=_imgData.slice(s,e);'
+            'var html=items.map(function(img){'
+            'var fuid=img.file_unique_id,dt=toMsk(img.created_at),plat=img.platform==="tg"?"📱":"💙";'
+            'var pr=(img.prompt||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;").slice(0,120);'
+            'var mdl=(img.model||"").split("-")[0]||"—";'
+            'return"<tr><td style=\\"width:56px;padding:6px 8px\\"><img src=\\"/admin/tg-photo/"+fuid+"\\" loading=\\"lazy\\"'
+            ' data-fuid=\\""+fuid+"\\" data-dt=\\""+dt+"\\"'
+            ' style=\\"width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;display:block\\"'
+            ' onclick=\\"openImg(this)\\" onerror=\\"this.style.opacity=.3\\"></td>'
+            '<td style=\\"font-size:.85em;max-width:320px;word-break:break-word;padding:6px 4px\\">"+plat+" "+pr+"</td>'
+            '<td style=\\"white-space:nowrap;color:var(--muted);font-size:.78em;padding:6px 8px\\">"+dt+"</td>'
+            '<td style=\\"white-space:nowrap;font-size:.78em;color:#8888a8;padding:6px 8px\\">"+mdl+"</td></tr>";'
+            '}).join("");'
+            'document.querySelector("#img-table-wrap tbody").innerHTML=html;'
+            'var tot=_imgData.length,hP=pg>1,hN=e<tot,pg2=document.getElementById("img-pagination"),h="";'
+            'if(hP||hN){h="<div style=\\"display:flex;gap:8px;margin-top:10px\\">";'
+            'if(hP)h+="<button class=\\"btn btn-muted btn-sm\\" onclick=\\"loadImgPage("+(pg-1)+")\\">← Назад</button>";'
+            'h+="<span style=\\"align-self:center;color:var(--muted);font-size:.85em\\">"+(s+1)+"–"+Math.min(e,tot)+" из "+tot+"</span>";'
+            'if(hN)h+="<button class=\\"btn btn-muted btn-sm\\" onclick=\\"loadImgPage("+(pg+1)+")\\">Далее →</button>";'
+            'h+="</div>";}if(pg2)pg2.innerHTML=h;}'
+            '</script>'
+        )
+    except Exception as exc:
+        logger.warning("_render_image_gallery error: %s", exc)
+        return '<div class="img-empty">Ошибка при загрузке галереи</div>'
 
 
 # ─── User detail ─────────────────────────────────────────────────────────────
@@ -879,9 +849,14 @@ async def handle_user_detail(request: web.Request) -> web.Response:
     if uid not in _users:
         raise web.HTTPNotFound()
 
-    u = get_user_settings(uid)
-    payments = _db.get_user_payments(uid)
-    image_logs = _db.get_user_image_logs(uid, limit=60)
+    try:
+        u = get_user_settings(uid)
+        payments = _db.get_user_payments(uid)
+        image_logs = _db.get_user_image_logs(uid, limit=60)
+    except Exception as exc:
+        logger.error("handle_user_detail db error uid=%s: %s", uid, exc)
+        err_content = f'<div class="alert alert-error">Ошибка загрузки данных пользователя: {exc}</div><a href="/admin/users">← Назад</a>'
+        return web.Response(text=_layout("Ошибка", err_content, "users"), content_type="text/html")
 
     name = u.get("first_name") or f"Пользователь {uid}"
     platform = u.get("platform", "—")
@@ -935,7 +910,8 @@ async def handle_user_detail(request: web.Request) -> web.Response:
     block_btn_class = "btn-success" if blocked else "btn-danger"
     block_btn_text = "Разблокировать" if blocked else "Заблокировать"
 
-    content = f"""
+    try:
+        content = f"""
 {alert_html}
 <div style="margin-bottom:16px">
   <a href="/admin/users" style="color:var(--muted);font-size:.9em">← Все пользователи</a>
@@ -1057,7 +1033,11 @@ async def handle_user_detail(request: web.Request) -> web.Response:
   }}
 </script>
 """
-    return web.Response(text=_layout(f"👤 {name}", content, "users"), content_type="text/html")
+        return web.Response(text=_layout(f"👤 {name}", content, "users"), content_type="text/html")
+    except Exception as exc:
+        logger.error("handle_user_detail render error uid=%s: %s", uid, exc, exc_info=True)
+        err_content = f'<div class="alert alert-error">Ошибка рендеринга страницы пользователя. Обратитесь к разработчику.<br><code>{exc}</code></div><a href="/admin/users">← Назад</a>'
+        return web.Response(text=_layout("Ошибка", err_content, "users"), content_type="text/html")
 
 
 # ─── Payments ────────────────────────────────────────────────────────────────
