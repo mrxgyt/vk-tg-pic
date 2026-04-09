@@ -15,7 +15,10 @@ LAVA_SHOP_ID = os.getenv("LAVA_SHOP_ID", "")
 LAVA_SECRET_KEY = os.getenv("LAVA_SECRET_KEY", "")
 LAVA_SECRET_KEY_2 = os.getenv("LAVA_SECRET_KEY_2", "")
 
-BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
+BASE_URL = (
+    os.getenv("BASE_URL", "")
+    or f"https://{os.getenv('REPLIT_DEV_DOMAIN', '')}"
+).rstrip("/")
 
 CREDIT_PACKAGES = {
     "pack_30":  {"credits": 30,  "amount": 99.00,  "label": "30 кредитов — 99₽"},
