@@ -1000,9 +1000,10 @@ async def handle_user_detail(request: web.Request) -> web.Response:
 <div class="modal-overlay" id="credits-modal">
   <div class="modal">
     <h3>💰 Изменить кредиты</h3>
+    <p id="mode-label" style="color:var(--muted);font-size:.85em;margin-bottom:6px">Режим: <b>Добавить к текущему</b></p>
     <div style="display:flex;gap:8px;margin-bottom:14px">
-      <button class="btn btn-muted btn-sm" id="mode-add" onclick="setMode('add')" style="flex:1">➕ Добавить</button>
-      <button class="btn btn-primary btn-sm" id="mode-set" onclick="setMode('set')" style="flex:1">✏️ Установить</button>
+      <button class="btn btn-primary btn-sm" id="mode-add" onclick="setMode('add')" style="flex:1">➕ Добавить</button>
+      <button class="btn btn-muted btn-sm" id="mode-set" onclick="setMode('set')" style="flex:1">✏️ Установить</button>
     </div>
     <input type="number" id="credits-amount" placeholder="Количество кредитов" min="0">
     <div class="modal-btns">
@@ -1020,8 +1021,20 @@ async def handle_user_detail(request: web.Request) -> web.Response:
     credMode = m;
     document.getElementById('mode-add').className = m==='add' ? 'btn btn-primary btn-sm' : 'btn btn-muted btn-sm';
     document.getElementById('mode-set').className = m==='set' ? 'btn btn-primary btn-sm' : 'btn btn-muted btn-sm';
+    document.getElementById('mode-label').innerHTML =
+      m === 'add'
+        ? 'Режим: <b>Добавить к текущему</b>'
+        : 'Режим: <b>Установить точное значение</b>';
   }}
-  function openModal(id) {{ document.getElementById(id).classList.add('open'); }}
+  function openModal(id) {{
+    if (id === 'credits-modal') {{
+      // Reset to default state every time modal opens
+      credMode = 'add';
+      setMode('add');
+      document.getElementById('credits-amount').value = '';
+    }}
+    document.getElementById(id).classList.add('open');
+  }}
   function closeModal(id) {{ document.getElementById(id).classList.remove('open'); }}
 
   async function applyCredits() {{
