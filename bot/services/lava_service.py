@@ -43,7 +43,11 @@ def verify_webhook_sign(invoice_id: str, amount: str, pay_time: str, received_si
     return hmac.compare_digest(expected, received_sign)
 
 
-async def create_payment_url(user_id: int, pack_key: str) -> dict:
+async def create_payment_url(user_id: int, pack_key: str, source: str = "tg") -> dict:
+    """
+    source: "tg" — Telegram bot, "vk" — VK bot.
+    Stored in customFields so the webhook knows where to send the notification.
+    """
     pack = CREDIT_PACKAGES.get(pack_key)
     if not pack:
         return {"ok": False, "error": "Неизвестный пакет"}
@@ -56,9 +60,10 @@ async def create_payment_url(user_id: int, pack_key: str) -> dict:
     payload: dict = {"shopId": LAVA_SHOP_ID, "sum": pack["amount"], "orderId": order_id}
     if BASE_URL:
         payload["hookUrl"] = f"{BASE_URL}/webhook/lava"
-        payload["successUrl"] = f"{BASE_URL}/payment/success"
-        payload["failUrl"] = f"{BASE_URL}/payment/fail"
+        payload["successUrl"] = f"{BASE_URL}/payment/success?src={source}"
+        payload["failUrl"] = f"{BASE_URL}/payment/fail?src={source}"
     payload["comment"] = pack["label"]
+    payload["customFields"] = source
     payload["expire"] = 60
 
     json_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -88,7 +93,7 @@ async def create_payment_url(user_id: int, pack_key: str) -> dict:
         return {"ok": False, "error": resp_data.get("message", "Ошибка платёжной системы")}
 
     pay_url = resp_data["data"].get("url", "")
-    logger.info("Lava invoice created: order=%s user=%s pack=%s url=%s",
-                order_id, user_id, pack_key, pay_url)
+    logger.info("Lava invoice created: order=%s user=%s pack=%s source=%s url=%s",
+                order_id, user_id, pack_key, source, pay_url)
 
     return {"ok": True, "pay_url": pay_url, "order_id": order_id}

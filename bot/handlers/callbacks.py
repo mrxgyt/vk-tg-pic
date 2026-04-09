@@ -241,7 +241,7 @@ async def buy_credits(callback: CallbackQuery) -> None:
         await callback.answer("Неизвестный пакет")
         return
 
-    result = await create_payment_url(callback.from_user.id, pack_key)
+    result = await create_payment_url(callback.from_user.id, pack_key, source="tg")
     if result["ok"]:
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup(inline_keyboard=[

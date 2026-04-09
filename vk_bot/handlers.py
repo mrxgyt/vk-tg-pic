@@ -470,7 +470,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             if not pack:
                 await edit_msg("Неизвестный пакет.")
                 return
-            result = await create_payment_url(uid, pack_key)
+            result = await create_payment_url(uid, pack_key, source="vk")
             if result["ok"]:
                 await edit_msg(
                     f"💳 Оплата: {pack['label']}\n\n"

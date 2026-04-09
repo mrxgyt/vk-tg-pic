@@ -70,13 +70,27 @@ async def handle_index(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+_TG_BOT_URL = "https://t.me/PicGenAI_26_bot"
+_VK_BOT_URL = "https://vk.me/picgenai"
+
+
 async def handle_success(request: web.Request) -> web.Response:
+    src = request.rel_url.query.get("src", "tg")
+    bot_url = _VK_BOT_URL if src == "vk" else _TG_BOT_URL
+    bot_label = "ВКонтакте" if src == "vk" else "Telegram"
     html = _read_template("success.html")
+    html = html.replace("https://t.me/PicGenAI_26_bot", bot_url)
+    html = html.replace("Вернуться в бота", f"Вернуться в {bot_label}-бот")
     return web.Response(text=html, content_type="text/html")
 
 
 async def handle_fail(request: web.Request) -> web.Response:
+    src = request.rel_url.query.get("src", "tg")
+    bot_url = _VK_BOT_URL if src == "vk" else _TG_BOT_URL
+    bot_label = "ВКонтакте" if src == "vk" else "Telegram"
     html = _read_template("fail.html")
+    html = html.replace("https://t.me/PicGenAI_26_bot", bot_url)
+    html = html.replace("Вернуться в бота", f"Вернуться в {bot_label}-бот")
     return web.Response(text=html, content_type="text/html")
 
 
@@ -309,6 +323,7 @@ async def handle_lava_webhook(request: web.Request) -> web.Response:
     amount = str(data.get("amount", ""))
     pay_time = str(data.get("pay_time", ""))
     received_sign = str(data.get("sign", ""))
+    source = str(data.get("custom_fields", "tg") or "tg")
 
     if received_sign and invoice_id and amount and pay_time:
         if not verify_webhook_sign(invoice_id, amount, pay_time, received_sign):
@@ -338,6 +353,7 @@ async def handle_lava_webhook(request: web.Request) -> web.Response:
                 await notify_payment(
                     stored["user_id"], pack["credits"],
                     stored["amount"], pack["label"],
+                    source=source,
                 )
         else:
             if not _db.mark_order_processed_memory(f"lava_{order_id}"):
