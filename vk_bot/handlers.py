@@ -593,7 +593,7 @@ async def _animate_thinking_vk(
 ) -> None:
     i = 1
     while not stop.is_set():
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(3)
         if stop.is_set():
             break
         try:
@@ -725,10 +725,16 @@ async def _handle_vk_chat_message(
             tmp = tmp[split_at:].lstrip()
         vk_chunks.append(tmp)
 
-        await bot.api.messages.edit(
-            peer_id=peer_id, message_id=thinking_id,
-            message=vk_chunks[0],
-        )
+        try:
+            await bot.api.messages.edit(
+                peer_id=peer_id, message_id=thinking_id,
+                message=vk_chunks[0],
+            )
+        except Exception:
+            await bot.api.messages.send(
+                peer_id=peer_id, random_id=0,
+                message=vk_chunks[0],
+            )
         for chunk in vk_chunks[1:]:
             await bot.api.messages.send(
                 peer_id=peer_id, random_id=0,
@@ -750,7 +756,12 @@ async def _handle_vk_chat_message(
                 message=msg,
             )
         except Exception:
-            pass
+            try:
+                await bot.api.messages.send(
+                    peer_id=peer_id, random_id=0, message=msg,
+                )
+            except Exception:
+                pass
 
 
 async def _generate_and_send(

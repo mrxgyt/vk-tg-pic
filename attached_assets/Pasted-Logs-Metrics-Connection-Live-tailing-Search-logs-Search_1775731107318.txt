@@ -1,0 +1,49 @@
+Logs
+
+Metrics
+Connection
+Live tailing
+
+Search logs
+Search logs
+==
+!=
+ABC
+(.*)
+
+Returned 68 lines
+
+Direction
+2026-04-09T10:33:09.229735418Z stdout F vkbottle.exception_factory.base_exceptions.VKAPIError_9: Flood control: too much messages sent to user
+2026-04-09T10:33:09.229732892Z stdout F     raise VKAPIError[code](**error)
+2026-04-09T10:33:09.229730296Z stdout F   File "/usr/local/lib/python3.13/site-packages/vkbottle/api/response_validator/vk_api_error_validator.py", line 51, in validate
+2026-04-09T10:33:09.229727482Z stdout F                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-09T10:33:09.229724886Z stdout F     response = await validator.validate(method, data, response, self)  # type: ignore
+2026-04-09T10:33:09.229722251Z stdout F   File "/usr/local/lib/python3.13/site-packages/vkbottle/api/api.py", line 107, in validate_response
+2026-04-09T10:33:09.229719173Z stdout F            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-09T10:33:09.229717037Z stdout F     return await self.validate_response(method, data, response)  # type: ignore
+2026-04-09T10:33:09.229714362Z stdout F   File "/usr/local/lib/python3.13/site-packages/vkbottle/api/api.py", line 79, in request
+2026-04-09T10:33:09.229710909Z stdout F                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-09T10:33:09.229698354Z stdout F     response = await self.api.request("messages.edit", params)
+2026-04-09T10:33:09.229695803Z stdout F   File "/usr/local/lib/python3.13/site-packages/vkbottle_types/codegen/methods/messages.py", line 219, in edit
+2026-04-09T10:33:09.229692759Z stdout F     )
+2026-04-09T10:33:09.229683355Z stdout F     ...<3 lines>...
+2026-04-09T10:33:09.229680466Z stdout F     await bot.api.messages.edit(
+2026-04-09T10:33:09.229677196Z stdout F   File "/app/vk_bot/handlers.py", line 717, in _handle_vk_chat_message
+2026-04-09T10:33:09.229656665Z stdout F Traceback (most recent call last):
+2026-04-09T10:33:09.229618355Z stdout F 2026-04-09 10:33:09 [ERROR] vk_bot.handlers — VK chat error: Flood control: too much messages sent to user
+2026-04-09T10:32:59.910500387Z stdout F 2026-04-09 10:32:59 [INFO] httpx — HTTP Request: POST https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-04-09T10:32:23.378541167Z stdout F 2026-04-09 10:32:23 [INFO] google_genai.models — AFC is enabled with max remote calls: 10.
+2026-04-09T10:32:23.377366901Z stdout F 2026-04-09 10:32:23 [INFO] bot.services.vertex_ai_service — Chat: trying 'api_key_2' [1/60 used for gemini-3.1-pro-preview]
+2026-04-09T10:32:23.377363625Z stdout F 2026-04-09 10:32:23 [WARNING] bot.services.vertex_ai_service — Chat: slot 'api_key_1' returned 429 — 60s cooldown, rotating...
+2026-04-09T10:32:23.377359535Z stdout F 2026-04-09 10:32:23 [WARNING] bot.services.vertex_ai_service — Account 'api_key_1' rate-limited, cooldown +60s
+2026-04-09T10:32:23.377327892Z stdout F 2026-04-09 10:32:23 [ERROR] bot.services.vertex_ai_service — Chat: slot 'api_key_1' error: ClientError("429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.', 'status': 'RESOURCE_EXHAUSTED'}}")
+2026-04-09T10:32:23.374134624Z stdout F 2026-04-09 10:32:23 [INFO] httpx — HTTP Request: POST https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 429 Too Many Requests"
+2026-04-09T10:31:55.72813675Z stdout F 2026-04-09 10:31:55 [INFO] google_genai.models — AFC is enabled with max remote calls: 10.
+2026-04-09T10:31:55.726530196Z stdout F 2026-04-09 10:31:55 [INFO] bot.services.vertex_ai_service — Chat: trying 'api_key_1' [1/60 used for gemini-3.1-pro-preview]
+2026-04-09T10:28:36.079646011Z stdout F 2026-04-09 10:28:36 [INFO] httpx — HTTP Request: POST https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-04-09T10:28:31.335710019Z stdout F 2026-04-09 10:28:31 [INFO] google_genai.models — AFC is enabled with max remote calls: 10.
+2026-04-09T10:28:31.335675503Z stdout F 2026-04-09 10:28:31 [INFO] bot.services.vertex_ai_service — Initialised genai client for 'api_key_2' (Vertex AI + API key mode)
+2026-04-09T10:28:31.182408351Z stdout F 2026-04-09 10:28:31 [INFO] bot.services.vertex_ai_service — Chat: trying 'api_key_2' [1/60 used for gemini-3.1-pro-preview]
+2026-04-09T10:28:01.194136866Z stdout F 2026-04-09 10:28:01 [INFO] httpx — HTTP Request: POST https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-04-09T10:27:57.758368296Z stdout F 2026-04-09 10:27:57 [INFO] google_gen
