@@ -587,8 +587,9 @@ class VertexAIService:
         config = genai_types.GenerateContentConfig(
             temperature=1,
             top_p=0.95,
-            max_output_tokens=65535,
             safety_settings=_get_safety_settings(),
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=24576),
+            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
         )
 
         text_parts: list[str] = []
@@ -600,7 +601,8 @@ class VertexAIService:
             if not chunk.candidates:
                 continue
             for part in chunk.candidates[0].content.parts:
-                if getattr(part, "text", None):
-                    text_parts.append(part.text)
+                txt = getattr(part, "text", None)
+                if txt and not getattr(part, "thought", False):
+                    text_parts.append(txt)
 
         return "".join(text_parts) if text_parts else ""
