@@ -113,6 +113,9 @@ async def run_vk(vertex_service):
             logger.exception("VK bot error")
         finally:
             loop.close()
+            # Close this thread's own DB connection cleanly
+            from bot.db import _close_conn as _db_close
+            _db_close()
             logger.info("VK bot stopped.")
 
     thread = threading.Thread(target=_run_vk_in_thread, daemon=True, name="vk-bot")
