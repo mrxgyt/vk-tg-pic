@@ -29,6 +29,7 @@ from vk_bot.keyboards import (
     get_balance_keyboard,
 )
 from vk_bot.photo_upload import upload_photo_to_vk, upload_document_to_vk, download_vk_photo
+from bot.log_channel import log_generation_vk
 
 logger = logging.getLogger(__name__)
 
@@ -864,6 +865,14 @@ async def _generate_and_send(
             increment_generations(uid, first_name, platform="vk", credits_cost=credits_cost)
         except Exception:
             pass
+
+        asyncio.create_task(log_generation_vk(
+            image_bytes=image_bytes,
+            prompt=prompt,
+            user_id=uid,
+            user_name=settings.get("first_name") or str(uid),
+            model=user_model,
+        ))
 
         try:
             await bot.api.messages.delete(
