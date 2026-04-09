@@ -318,7 +318,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         lines.append("")
         lines.append("💬 Чат с ИИ (в день):")
         lines.append(f"▫️ Использовано: {chat_used} из {chat_limit}")
-        lines.append("▫️ Дневной лимит равен количеству кредитов")
+        lines.append(f"▫️ Дневной лимит: {chat_limit} запросов")
         lines.append("")
         lines.append("💳 Выберите пакет для пополнения:")
 

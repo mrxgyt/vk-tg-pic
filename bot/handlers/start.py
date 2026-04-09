@@ -138,7 +138,7 @@ async def cmd_balance(message: Message) -> None:
     lines.append("")
     lines.append("💬 <b>Чат с ИИ (в день):</b>")
     lines.append(f"▫️ Использовано: <b>{chat_used}</b> из <b>{chat_limit}</b>")
-    lines.append("▫️ Дневной лимит равен количеству кредитов")
+    lines.append(f"▫️ Дневной лимит: <b>{chat_limit}</b> запросов")
     lines.append("")
     lines.append("💳 <b>Выберите пакет для пополнения:</b>")
 
