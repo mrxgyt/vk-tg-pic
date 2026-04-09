@@ -24,6 +24,9 @@ import hmac
 import json
 import logging
 import os
+import random
+import secrets
+import time
 
 from aiohttp import web
 
@@ -45,6 +48,10 @@ _SESSION_SECRET = hashlib.sha256((_ADMIN_PASSWORD + "_picgenai_admin_v1").encode
 _COOKIE_NAME = "admin_tok"
 _COOKIE_MAX_AGE = 86400 * 7  # 7 days
 _PAGE_SIZE = 50
+
+_ADMIN_TG_ID = 6014789391          # admin Telegram user ID for 2FA codes
+_2FA_TTL = 300                      # seconds the code is valid
+_pending_2fa: dict[str, tuple[str, float]] = {}  # token → (code, expires_at)
 
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
@@ -288,25 +295,26 @@ def _layout(title: str, content: str, active: str = "") -> str:
 
 # ─── Login ───────────────────────────────────────────────────────────────────
 
-async def handle_login(request: web.Request) -> web.Response:
-    if _is_auth(request):
-        raise web.HTTPFound("/admin/dashboard")
-    error = ""
-    if request.method == "POST":
-        data = await request.post()
-        pwd = data.get("password", "")
-        if hmac.compare_digest(
-            hashlib.sha256(pwd.encode()).hexdigest(),
-            hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest(),
-        ):
-            resp = web.HTTPFound("/admin/dashboard")
-            resp.set_cookie(_COOKIE_NAME, _make_token(), max_age=_COOKIE_MAX_AGE, httponly=True)
-            raise resp
-        else:
-            error = "Неверный пароль"
+def _login_page_html(step: str, token: str, error: str) -> str:
+    error_html = f'<div class="alert">{error}</div>' if error else ""
+    if step == "2fa":
+        subtitle = "Код отправлен в Telegram. Введите его ниже."
+        form_body = f"""
+    <label>6-значный код из Telegram</label>
+    <input type="text" name="code" inputmode="numeric" pattern="[0-9]{{6}}"
+      maxlength="6" placeholder="000000" autofocus autocomplete="one-time-code">
+    <input type="hidden" name="tok" value="{token}">
+    <button type="submit">Подтвердить</button>
+    <a href="/admin/login" style="display:block;text-align:center;margin-top:14px;
+      color:#8888a8;font-size:.85em">← Ввести пароль заново</a>"""
+    else:
+        subtitle = "Панель управления"
+        form_body = """
+    <label>Пароль администратора</label>
+    <input type="password" name="password" placeholder="••••••••" autofocus>
+    <button type="submit">Войти</button>"""
 
-    error_html = f'<div class="alert alert-error">{error}</div>' if error else ""
-    html = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
@@ -315,36 +323,121 @@ async def handle_login(request: web.Request) -> web.Response:
 <style>
   *{{margin:0;padding:0;box-sizing:border-box}}
   body{{font-family:-apple-system,sans-serif;background:#08070e;color:#e4e4ef;
-    min-height:100vh;display:flex;align-items:center;justify-content:center}}
+    min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}}
   .box{{background:#0f0e1a;border:1px solid rgba(167,139,250,.2);border-radius:20px;
     padding:40px;width:100%;max-width:360px}}
   h1{{font-size:1.5em;margin-bottom:6px;background:linear-gradient(135deg,#a78bfa,#60a5fa);
     -webkit-background-clip:text;-webkit-text-fill-color:transparent}}
-  p{{color:#8888a8;font-size:.9em;margin-bottom:24px}}
+  .sub{{color:#8888a8;font-size:.9em;margin-bottom:24px}}
   label{{display:block;color:#8888a8;font-size:.82em;margin-bottom:6px}}
-  input{{width:100%;background:#08070e;border:1px solid rgba(167,139,250,.2);
-    border-radius:10px;padding:11px 14px;color:#e4e4ef;font-size:.95em;
-    margin-bottom:18px;outline:none}}
+  input[type=password],input[type=text]{{width:100%;background:#08070e;
+    border:1px solid rgba(167,139,250,.2);border-radius:10px;padding:11px 14px;
+    color:#e4e4ef;font-size:.95em;margin-bottom:18px;outline:none;
+    letter-spacing:.15em;text-align:center;font-size:1.3em}}
+  input[type=password]{{letter-spacing:normal;font-size:.95em;text-align:left}}
   input:focus{{border-color:#a78bfa}}
   button{{width:100%;padding:12px;background:linear-gradient(135deg,#7c3aed,#6366f1);
-    border:none;border-radius:10px;color:#fff;font-size:1em;font-weight:700;cursor:pointer}}
+    border:none;border-radius:10px;color:#fff;font-size:1em;font-weight:700;
+    cursor:pointer;margin-bottom:4px}}
+  button:hover{{opacity:.9}}
   .alert{{padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:.88em;
     background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.2);color:#f87171}}
+  .step-badge{{display:inline-block;padding:3px 10px;border-radius:20px;font-size:.78em;
+    margin-bottom:18px;background:rgba(167,139,250,.1);color:#a78bfa;border:1px solid rgba(167,139,250,.2)}}
 </style>
 </head>
 <body>
 <div class="box">
   <h1>⚡ PicGenAI Admin</h1>
-  <p>Панель управления</p>
+  <div class="sub">{subtitle}</div>
+  <div class="step-badge">{"🔐 Шаг 2 из 2 — 2FA" if step == "2fa" else "🔑 Шаг 1 из 2 — Пароль"}</div>
   {error_html}
   <form method="post">
-    <label>Пароль администратора</label>
-    <input type="password" name="password" placeholder="••••••••" autofocus>
-    <button type="submit">Войти</button>
+    {form_body}
   </form>
 </div>
 </body>
 </html>"""
+
+
+async def _send_2fa_code(code: str) -> bool:
+    """Send 2FA code to admin Telegram ID. Returns True on success."""
+    from bot.notify import _tg_bot
+    if _tg_bot is None:
+        logger.warning("2FA: TG bot not available, cannot send code")
+        return False
+    try:
+        await _tg_bot.send_message(
+            chat_id=_ADMIN_TG_ID,
+            text=(
+                f"🔐 <b>Код входа в Admin Panel</b>\n\n"
+                f"<code>{code}</code>\n\n"
+                f"Действителен 5 минут. Никому не сообщайте."
+            ),
+            parse_mode="HTML",
+        )
+        return True
+    except Exception as exc:
+        logger.warning("2FA send failed: %s", exc)
+        return False
+
+
+async def handle_login(request: web.Request) -> web.Response:
+    if _is_auth(request):
+        raise web.HTTPFound("/admin/dashboard")
+
+    step = request.rel_url.query.get("step", "password")
+
+    if request.method == "POST":
+        data = await request.post()
+
+        # ── Step 1: password ─────────────────────────────────
+        if step == "password":
+            pwd = data.get("password", "")
+            if hmac.compare_digest(
+                hashlib.sha256(pwd.encode()).hexdigest(),
+                hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest(),
+            ):
+                code = f"{random.randint(0, 999999):06d}"
+                tok = secrets.token_urlsafe(24)
+                _pending_2fa[tok] = (code, time.time() + _2FA_TTL)
+                sent = await _send_2fa_code(code)
+                if not sent:
+                    # If TG unavailable fall back — skip 2FA and log in directly
+                    logger.warning("2FA code send failed — skipping 2FA, logging in directly")
+                    resp = web.HTTPFound("/admin/dashboard")
+                    resp.set_cookie(_COOKIE_NAME, _make_token(), max_age=_COOKIE_MAX_AGE, httponly=True)
+                    raise resp
+                raise web.HTTPFound(f"/admin/login?step=2fa&tok={tok}")
+            else:
+                html = _login_page_html("password", "", "Неверный пароль")
+                return web.Response(text=html, content_type="text/html")
+
+        # ── Step 2: 2FA code ─────────────────────────────────
+        if step == "2fa":
+            tok = data.get("tok", "")
+            entered = data.get("code", "").strip()
+            entry = _pending_2fa.get(tok)
+            if entry is None:
+                html = _login_page_html("password", "", "Сессия истекла. Введите пароль снова.")
+                return web.Response(text=html, content_type="text/html")
+            correct_code, expires_at = entry
+            if time.time() > expires_at:
+                _pending_2fa.pop(tok, None)
+                html = _login_page_html("password", "", "Код истёк. Войдите снова.")
+                return web.Response(text=html, content_type="text/html")
+            if hmac.compare_digest(entered, correct_code):
+                _pending_2fa.pop(tok, None)
+                resp = web.HTTPFound("/admin/dashboard")
+                resp.set_cookie(_COOKIE_NAME, _make_token(), max_age=_COOKIE_MAX_AGE, httponly=True)
+                raise resp
+            else:
+                html = _login_page_html("2fa", tok, "Неверный код. Попробуйте ещё раз.")
+                return web.Response(text=html, content_type="text/html")
+
+    # ── GET ──────────────────────────────────────────────────
+    tok = request.rel_url.query.get("tok", "")
+    html = _login_page_html(step, tok, "")
     return web.Response(text=html, content_type="text/html")
 
 
