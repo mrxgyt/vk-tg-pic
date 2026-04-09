@@ -175,7 +175,7 @@ async def start_chat(message: Message) -> None:
     uid = message.from_user.id
     _sessions[uid] = []
     await message.answer(
-        "💬 <b>Чат с Gemini 2.5 Pro</b>\n\n"
+        "💬 <b>Чат с Gemini 3.1 Pro</b>\n\n"
         "🧠 Анализирую текст, код, фото, видео, аудио и документы\n"
         "🌍 Отвечаю на любом языке\n"
         "📎 Разбираю PDF и файлы\n"

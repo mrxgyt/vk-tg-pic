@@ -328,7 +328,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         uid = message.from_id
         _chat_sessions[uid] = []
         await message.answer(
-            "💬 Чат с Gemini 2.5 Pro\n\n"
+            "💬 Чат с Gemini 3.1 Pro\n\n"
             "🧠 Анализирую текст, код, фото, видео, аудио и документы\n"
             "🌍 Отвечаю на любом языке\n"
             "📎 Разбираю PDF и файлы\n"
