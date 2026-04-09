@@ -38,11 +38,12 @@ COOLDOWN_SECONDS = 60
 RATE_WINDOW_SECONDS = 60
 
 # QPM limits per model name substring (longest match wins, "default" is the fallback).
-# Adjust these to match your actual Vertex AI quota for each model.
+# Image-generation models are expensive — keep their QPM low.
+# Text/chat models (gemini-3.1-pro-preview, etc.) have much higher quotas.
 MODEL_QPM: dict[str, int] = {
-    "flash": 5,    # gemini-x.x-flash-image-preview
-    "pro":   3,    # gemini-x-pro-image-preview  (usually lower quota)
-    "default": 5,
+    "flash-image": 5,   # gemini-x.x-flash-image-preview
+    "pro-image":   3,   # gemini-x-pro-image-preview
+    "default":    60,   # text/chat models — no artificial low limit
 }
 
 
