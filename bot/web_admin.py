@@ -805,27 +805,31 @@ async def handle_users(request: web.Request) -> web.Response:
 _IMG_PAGE_SIZE = 10
 
 
-def _render_image_gallery(image_logs: list[dict], page: int = 1) -> str:
-    """Build the image list (compact table) for a user's generated images."""
+def _render_image_gallery(
+    image_logs: list[dict],
+    page: int,
+    total: int,
+    uid: int,
+) -> str:
+    """Build the image list (compact table) for a user's generated images.
+    Uses server-side pagination — only the current page records are passed in,
+    no JSON blob is embedded in the HTML."""
     try:
-        if not image_logs:
+        if total == 0:
             return '<div class="img-empty">Генераций пока нет</div>'
 
-        total = len(image_logs)
         start = (page - 1) * _IMG_PAGE_SIZE
-        end = start + _IMG_PAGE_SIZE
-        page_items = image_logs[start:end]
-        has_next = end < total
+        has_next = (start + len(image_logs)) < total
         has_prev = page > 1
+        end = start + len(image_logs)
 
         rows = ""
-        for img in page_items:
+        for img in image_logs:
             fuid = img["file_unique_id"]
             prompt_esc = (img.get("prompt") or "").replace("&", "&amp;").replace("<", "&lt;").replace('"', "&quot;")
             dt = _msk(img.get("created_at", ""))
             plat = "📱" if img.get("platform") == "tg" else "💙"
             mdl = (img.get("model") or "").split("-")[0] or "—"
-            # Use data-* attributes to avoid any JS-injection via prompt text
             rows += (
                 f'<tr>'
                 f'<td style="width:56px;padding:6px 8px">'
@@ -839,58 +843,33 @@ def _render_image_gallery(image_logs: list[dict], page: int = 1) -> str:
                 f'</tr>'
             )
 
+        # Server-side pagination: links reload the page with ?img_page=N
+        base_url = f"/admin/users/{uid}"
         pagination = ""
         if has_prev or has_next:
             pagination = '<div style="display:flex;gap:8px;margin-top:10px">'
             if has_prev:
-                pagination += f'<button class="btn btn-muted btn-sm" onclick="loadImgPage({page-1})">← Назад</button>'
-            pagination += f'<span style="align-self:center;color:var(--muted);font-size:.85em">{start+1}–{min(end,total)} из {total}</span>'
+                pagination += f'<a href="{base_url}?img_page={page-1}" class="btn btn-muted btn-sm">← Назад</a>'
+            pagination += f'<span style="align-self:center;color:var(--muted);font-size:.85em">{start+1}–{end} из {total}</span>'
             if has_next:
-                pagination += f'<button class="btn btn-muted btn-sm" onclick="loadImgPage({page+1})">Далее →</button>'
+                pagination += f'<a href="{base_url}?img_page={page+1}" class="btn btn-muted btn-sm">Далее →</a>'
             pagination += '</div>'
 
-        # Safely embed JSON — escape </script> to prevent tag injection
-        safe_json = json.dumps(image_logs, ensure_ascii=False).replace("</", "<\\/")
-
         return (
-            '<div class="table-wrap" id="img-table-wrap"><table>'
+            '<div class="table-wrap"><table>'
             '<thead><tr><th style="width:56px">Фото</th><th>Промпт</th><th>Дата</th><th>Модель</th></tr></thead>'
             f'<tbody>{rows}</tbody></table></div>'
-            f'<div id="img-pagination">{pagination}</div>'
+            f'{pagination}'
             '<div class="lightbox" id="lightbox" onclick="closeLightbox()">'
             '<span class="lightbox-close" onclick="closeLightbox()">×</span>'
             '<img id="lightbox-img" src="" alt="">'
             '<div class="lightbox-caption" id="lightbox-cap"></div></div>'
-            f'<script>var _imgData={safe_json};var _pgSz={_IMG_PAGE_SIZE};'
-            'function toMsk(s){if(!s)return"—";var d=new Date(s.endsWith("Z")?s:s+"Z");d.setHours(d.getHours()+3);'
-            'var p=function(n){return String(n).padStart(2,"0")};'
-            'return p(d.getDate())+"."+p(d.getMonth()+1)+"."+d.getFullYear()+" "+p(d.getHours())+":"+p(d.getMinutes());}'
+            '<script>'
             'function openLightbox(src,cap){document.getElementById("lightbox-img").src=src;'
             'document.getElementById("lightbox-cap").textContent=cap;document.getElementById("lightbox").classList.add("open");}'
             'function openImg(el){openLightbox("/admin/tg-photo/"+el.dataset.fuid,(el.closest("tr").querySelector("td:nth-child(2)").textContent.trim())+" · "+el.dataset.dt);}'
             'function closeLightbox(){document.getElementById("lightbox").classList.remove("open");document.getElementById("lightbox-img").src="";}'
             'document.addEventListener("keydown",function(e){if(e.key==="Escape")closeLightbox();});'
-            'function loadImgPage(pg){'
-            'var s=(pg-1)*_pgSz,e=s+_pgSz,items=_imgData.slice(s,e);'
-            'var html=items.map(function(img){'
-            'var fuid=img.file_unique_id,dt=toMsk(img.created_at),plat=img.platform==="tg"?"📱":"💙";'
-            'var pr=(img.prompt||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;").slice(0,120);'
-            'var mdl=(img.model||"").split("-")[0]||"—";'
-            'return"<tr><td style=\\"width:56px;padding:6px 8px\\"><img src=\\"/admin/tg-photo/"+fuid+"\\" loading=\\"lazy\\"'
-            ' data-fuid=\\""+fuid+"\\" data-dt=\\""+dt+"\\"'
-            ' style=\\"width:48px;height:48px;object-fit:cover;border-radius:6px;cursor:pointer;display:block\\"'
-            ' onclick=\\"openImg(this)\\" onerror=\\"this.style.opacity=.3\\"></td>'
-            '<td style=\\"font-size:.85em;max-width:320px;word-break:break-word;padding:6px 4px\\">"+plat+" "+pr+"</td>'
-            '<td style=\\"white-space:nowrap;color:var(--muted);font-size:.78em;padding:6px 8px\\">"+dt+"</td>'
-            '<td style=\\"white-space:nowrap;font-size:.78em;color:#8888a8;padding:6px 8px\\">"+mdl+"</td></tr>";'
-            '}).join("");'
-            'document.querySelector("#img-table-wrap tbody").innerHTML=html;'
-            'var tot=_imgData.length,hP=pg>1,hN=e<tot,pg2=document.getElementById("img-pagination"),h="";'
-            'if(hP||hN){h="<div style=\\"display:flex;gap:8px;margin-top:10px\\">";'
-            'if(hP)h+="<button class=\\"btn btn-muted btn-sm\\" onclick=\\"loadImgPage("+(pg-1)+")\\">← Назад</button>";'
-            'h+="<span style=\\"align-self:center;color:var(--muted);font-size:.85em\\">"+(s+1)+"–"+Math.min(e,tot)+" из "+tot+"</span>";'
-            'if(hN)h+="<button class=\\"btn btn-muted btn-sm\\" onclick=\\"loadImgPage("+(pg+1)+")\\">Далее →</button>";'
-            'h+="</div>";}if(pg2)pg2.innerHTML=h;}'
             '</script>'
         )
     except Exception as exc:
@@ -908,6 +887,10 @@ async def handle_user_detail(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
 
     msg = request.rel_url.query.get("msg", "")
+    try:
+        img_page = max(1, int(request.rel_url.query.get("img_page", 1)))
+    except (ValueError, TypeError):
+        img_page = 1
 
     try:
         # Always load fresh data from DB for accurate profile display
@@ -924,7 +907,10 @@ async def handle_user_detail(request: web.Request) -> web.Response:
             if uid not in _users:
                 raise web.HTTPNotFound()
         payments = _db.get_user_payments(uid)
-        image_logs = _db.get_user_image_logs(uid, limit=60)
+        # Server-side pagination: load only one page of images from DB
+        img_offset = (img_page - 1) * _IMG_PAGE_SIZE
+        image_logs = _db.get_user_image_logs(uid, limit=_IMG_PAGE_SIZE, offset=img_offset)
+        image_total = _db.count_user_image_logs(uid)
     except web.HTTPNotFound:
         raise
     except Exception as exc:
@@ -1034,8 +1020,8 @@ async def handle_user_detail(request: web.Request) -> web.Response:
   <button class="btn btn-danger" onclick="confirmDelete()">🗑 Удалить пользователя</button>
 </div>
 
-<div class="section-heading">Генерации ({len(image_logs)})</div>
-{_render_image_gallery(image_logs)}
+<div class="section-heading">Генерации ({image_total})</div>
+{_render_image_gallery(image_logs, img_page, image_total, uid)}
 
 <div class="section-heading">История платежей ({len(payments)})</div>
 <div class="table-wrap">
@@ -1316,10 +1302,27 @@ async def api_delete(request: web.Request) -> web.Response:
 
 _TG_TOKEN_FOR_PROXY = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+# Shared aiohttp session — reused across all photo-proxy requests to avoid
+# the overhead of creating a new TCP connection pool on every thumbnail load.
+# Connector limits: max 8 simultaneous connections to Telegram CDN.
+_photo_session: _aiohttp.ClientSession | None = None
+_photo_connector: _aiohttp.TCPConnector | None = None
+
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap per image
+
+
+def _get_photo_session() -> _aiohttp.ClientSession:
+    global _photo_session, _photo_connector
+    if _photo_session is None or _photo_session.closed:
+        _photo_connector = _aiohttp.TCPConnector(limit=8, limit_per_host=8)
+        _photo_session = _aiohttp.ClientSession(connector=_photo_connector)
+    return _photo_session
+
 
 @_require_auth
 async def handle_tg_photo(request: web.Request) -> web.Response:
-    """Proxy a Telegram photo by file_unique_id so it shows in the browser."""
+    """Proxy a Telegram photo by file_unique_id — streams directly to browser,
+    never loads the full image into memory."""
     file_unique_id = request.match_info.get("file_unique_id", "")
     if not file_unique_id or not _TG_TOKEN_FOR_PROXY:
         raise web.HTTPNotFound()
@@ -1328,24 +1331,36 @@ async def handle_tg_photo(request: web.Request) -> web.Response:
         raise web.HTTPNotFound()
     file_id = row["file_id"]
     try:
-        async with _aiohttp.ClientSession() as session:
-            # Step 1: get file path
-            gf_url = f"https://api.telegram.org/bot{_TG_TOKEN_FOR_PROXY}/getFile"
-            async with session.get(gf_url, params={"file_id": file_id},
-                                   timeout=_aiohttp.ClientTimeout(total=10)) as resp:
-                gf = await resp.json()
-            if not gf.get("ok"):
-                raise web.HTTPNotFound()
-            file_path = gf["result"]["file_path"]
-            # Step 2: download the file
-            dl_url = f"https://api.telegram.org/file/bot{_TG_TOKEN_FOR_PROXY}/{file_path}"
-            async with session.get(dl_url, timeout=_aiohttp.ClientTimeout(total=30)) as dl:
-                img_bytes = await dl.read()
-        return web.Response(
-            body=img_bytes,
-            content_type="image/jpeg",
-            headers={"Cache-Control": "max-age=86400"},
-        )
+        session = _get_photo_session()
+        # Step 1: resolve file_path via Telegram API (small JSON, read fully)
+        gf_url = f"https://api.telegram.org/bot{_TG_TOKEN_FOR_PROXY}/getFile"
+        async with session.get(gf_url, params={"file_id": file_id},
+                               timeout=_aiohttp.ClientTimeout(total=10)) as resp:
+            gf = await resp.json()
+        if not gf.get("ok"):
+            raise web.HTTPNotFound()
+        file_path = gf["result"]["file_path"]
+        # Step 2: stream image bytes directly to browser — never loaded into RAM
+        dl_url = f"https://api.telegram.org/file/bot{_TG_TOKEN_FOR_PROXY}/{file_path}"
+        async with session.get(dl_url, timeout=_aiohttp.ClientTimeout(total=30)) as dl:
+            if dl.status != 200:
+                raise web.HTTPBadGateway()
+            content_type = dl.headers.get("Content-Type", "image/jpeg")
+            stream_resp = web.StreamResponse(
+                headers={
+                    "Content-Type": content_type,
+                    "Cache-Control": "max-age=86400, immutable",
+                }
+            )
+            await stream_resp.prepare(request)
+            received = 0
+            async for chunk in dl.content.iter_chunked(65536):
+                received += len(chunk)
+                if received > _MAX_IMAGE_BYTES:
+                    logger.warning("handle_tg_photo: image too large, truncating %s", file_unique_id)
+                    break
+                await stream_resp.write(chunk)
+            return stream_resp
     except web.HTTPException:
         raise
     except Exception as exc:
