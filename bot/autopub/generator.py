@@ -2,16 +2,17 @@
 bot/autopub/generator.py
 ~~~~~~~~~~~~~~~~~~~~~~~~
 Uses Gemini (via VertexAIService) to:
-1. Invent a trending topic + image prompt + post caption
-2. Generate the image
-3. Upload the draft image to Telegram (log channel) → get file_id for later use
+1. Search the internet for current trending topics/memes (Google Search grounding)
+2. Invent a post idea + detailed image prompt + caption based on the trend
+3. Generate the image
+4. Upload the draft image to Telegram (log channel) → get file_id for later use
 """
 from __future__ import annotations
 
 import logging
 import os
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from bot.services.vertex_ai_service import VertexAIService
@@ -26,52 +27,150 @@ _DEFAULT_TOPICS = [
     "зимние вечера", "книги и отдых", "спорт и здоровье", "романтика",
 ]
 
+# ─── Trend search ────────────────────────────────────────────────────────────
+
+_TREND_SEARCH_PROMPT = """Используй поиск в интернете и найди 5-7 АКТУАЛЬНЫХ трендов, мемов или вирусных тем, \
+которые сейчас (сегодня) популярны в русскоязычном интернете, Instagram, TikTok, ВКонтакте или Telegram.
+
+Уже использованные темы (НЕ повторяй их):
+{used_topics}
+
+Верни ответ строго в формате JSON-массива (без markdown, без ```):
+[
+  {{"trend": "Название тренда", "context": "1-2 предложения что это и почему вирусное"}},
+  ...
+]
+
+Требования:
+- Только реальные актуальные тренды, которые сейчас обсуждают
+- Подходящие для визуального контента (можно сгенерировать красивое изображение)
+- Без политики, новостей катастроф, 18+ тематики
+- Предпочтительно: lifestyle, красота, мода, природа, уют, путешествия, food, эстетика"""
+
+
+async def search_current_trends(
+    vertex_service: "VertexAIService",
+    used_topics: list[str] | None = None,
+) -> list[dict] | None:
+    """
+    Ask Gemini (with Google Search) for today's trending topics.
+    Returns list of {trend, context} dicts or None on error.
+    """
+    import json
+
+    used_str = "\n".join(f"- {t}" for t in (used_topics or [])[:20]) or "(нет)"
+    prompt_text = _TREND_SEARCH_PROMPT.format(used_topics=used_str)
+
+    search_model = getattr(vertex_service, "SEARCH_MODEL", "gemini-3.1-flash-lite-preview")
+    logger.info("[autopub gen] поиск актуальных трендов через Google Search (модель=%s)...", search_model)
+    try:
+        text = await vertex_service.chat_text([
+            {"role": "user", "parts": [{"text": prompt_text}]}
+        ], model_override=search_model)
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        trends = json.loads(text)
+        if isinstance(trends, list) and trends:
+            logger.info("[autopub gen] найдено %d трендов", len(trends))
+            for t in trends:
+                logger.info("[autopub gen]   • %s", t.get("trend", "?"))
+            return trends
+        logger.warning("[autopub gen] trends parse OK but empty list")
+    except Exception as exc:
+        logger.error("[autopub gen] ошибка поиска трендов: %s", exc)
+    return None
+
+
+# ─── Idea generation ─────────────────────────────────────────────────────────
+
 _IDEA_PROMPT_TEMPLATE = """Ты — креативный контент-менеджер для Telegram-канала об AI-генерации изображений.
 
-Тематика контента: {topics}
+Тематика канала: {topics}
 Стиль изображений: {style}
-
+{trend_block}
+{feedback_block}
 Придумай одну идею для поста. Верни ответ строго в формате JSON (без markdown, без ```):
 {{
   "topic": "Краткое название темы (до 40 символов), например: ❤️ Домашний уют",
-  "prompt": "Детальный промпт на русском языке для генерации изображения (200-400 слов). Опиши: главный объект, позу/действие, одежду, антураж, освещение, стиль фото (lifestyle, editorial и т.д.), соотношение сторон 9:16",
-  "caption_intro": "Короткий эмоциональный заголовок для поста (до 60 символов)"
+  "caption": "Текст поста для публикации в Telegram и ВКонтакте. Максимум 800 символов. Начни с эмоционального заголовка, затем 3-5 предложений о теме/настроении, в конце 1-2 строки CTA. Без хэштегов, без ссылок, без упоминания промпта.",
+  "prompt": "Детальный промпт на АНГЛИЙСКОМ языке для генерации изображения. СТРОГО не более 800 символов (считай символы!). Опиши: главный объект/сцену, антураж, освещение, стиль фото (lifestyle, editorial и т.д.), соотношение сторон 4:5 (Instagram portrait). ВАЖНО: персонаж должен быть разным — иногда мужчина, иногда женщина, иногда пара, иногда группа людей, иногда вообще без людей (пейзаж, архитектура, натюрморт). Не ограничивайся только девушками!",
+  "caption_intro": "Короткий эмоциональный заголовок (до 60 символов)"
 }}
 
-Промпт должен быть очень подробным — как профессиональное ТЗ для фотографа."""
+Промпт должен быть подробным и на английском — так модель генерирует лучше."""
 
 
 async def generate_post_idea(
     vertex_service: "VertexAIService",
     topic_hints: str = "",
     image_style: str = "",
+    trend_context: str = "",
+    admin_feedback: str = "",
+    on_thought: Any | None = None,
 ) -> dict | None:
-    """Ask Gemini to invent a topic + prompt + caption. Returns dict or None on error."""
+    """Ask Gemini Pro to invent a topic + prompt + caption. Returns dict or None."""
     import json
 
     topics = topic_hints.strip() or ", ".join(random.sample(_DEFAULT_TOPICS, 4))
     style = image_style.strip() or "lifestyle, editorial, реалистичная фотография"
 
-    idea_prompt = _IDEA_PROMPT_TEMPLATE.format(topics=topics, style=style)
+    trend_block = ""
+    if trend_context:
+        trend_block = f"\nАктуальный тренд для поста:\n{trend_context}\nИспользуй этот тренд как основу идеи.\n"
 
+    feedback_block = ""
+    if admin_feedback:
+        feedback_block = (
+            f"\nПредыдущий пост был отклонён с комментарием:\n"
+            f"\"{admin_feedback}\"\n"
+            f"Учти этот фидбэк и сделай пост лучше.\n"
+        )
+
+    idea_prompt = _IDEA_PROMPT_TEMPLATE.format(
+        topics=topics, style=style,
+        trend_block=trend_block, feedback_block=feedback_block,
+    )
+
+    pro_model = getattr(vertex_service, "CHAT_MODEL", "gemini-3.1-pro-preview")
+    logger.info("[autopub gen] генерирую идею поста модель=%s (trend=%s feedback=%s)",
+                pro_model, bool(trend_context), bool(admin_feedback))
     try:
-        text = await vertex_service.chat_text([
-            {"role": "user", "parts": [{"type": "text", "text": idea_prompt}]}
-        ])
+        text = await vertex_service.chat_text(
+            [{"role": "user", "parts": [{"text": idea_prompt}]}],
+            on_thought=on_thought,
+        )
         text = text.strip()
-        # Strip markdown code fences if present
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
         data = json.loads(text)
-        if not all(k in data for k in ("topic", "prompt", "caption_intro")):
-            raise ValueError(f"Missing keys in response: {data}")
+        if not all(k in data for k in ("topic", "prompt")):
+            raise ValueError(f"Missing keys in response: {list(data.keys())}")
+        # backfill optional fields
+        if "caption_intro" not in data:
+            data["caption_intro"] = data.get("caption", data["topic"])[:60]
+        if "caption" not in data:
+            data["caption"] = data.get("caption_intro", "")
+        # cap caption at 900 chars
+        data["caption"] = data["caption"][:900]
+        # cap prompt at 800 chars so it fits in TG photo caption without truncation
+        original_prompt_len = len(data["prompt"])
+        data["prompt"] = data["prompt"][:800]
+        if original_prompt_len > 800:
+            logger.warning("[autopub gen] промт обрезан с %d до 800 символов", original_prompt_len)
+        logger.info("[autopub gen] идея OK: topic=%r  prompt_len=%d  caption_len=%d",
+                    data["topic"], len(data["prompt"]), len(data["caption"]))
         return data
     except Exception as exc:
-        logger.error("autopub generator: idea generation failed: %s", exc)
+        logger.error("[autopub gen] ошибка генерации идеи: %s", exc)
         return None
 
+
+# ─── Image generation ────────────────────────────────────────────────────────
 
 async def generate_image_for_post(
     vertex_service: "VertexAIService",
@@ -79,20 +178,21 @@ async def generate_image_for_post(
     model: str = "",
 ) -> bytes | None:
     """Generate image bytes using VertexAIService."""
-    from bot.config import get_settings
-    settings = get_settings()
-    use_model = model or settings.image_model or "gemini-3.1-flash-image-preview"
+    use_model = model or "gemini-3.1-flash-image-preview"
+    logger.info("[autopub gen] генерирую изображение, модель=%s", use_model)
     try:
         image_bytes = await vertex_service.generate_image(
             prompt=prompt,
-            model=use_model,
-            aspect_ratio="9:16",
+            model_override=use_model,
+            aspect_ratio="4:5",
         )
         return image_bytes
     except Exception as exc:
-        logger.error("autopub generator: image generation failed: %s", exc)
+        logger.error("[autopub gen] ошибка генерации изображения: %s", exc)
         return None
 
+
+# ─── TG upload ───────────────────────────────────────────────────────────────
 
 async def upload_draft_to_telegram(image_bytes: bytes, caption: str) -> tuple[str, str] | None:
     """
@@ -102,17 +202,18 @@ async def upload_draft_to_telegram(image_bytes: bytes, caption: str) -> tuple[st
     import aiohttp
 
     if not _TG_TOKEN:
-        logger.warning("autopub: TELEGRAM_BOT_TOKEN not set, cannot upload draft")
+        logger.warning("[autopub gen] TELEGRAM_BOT_TOKEN не задан — нельзя загрузить черновик")
         return None
 
     from bot.log_channel import LOG_CHANNEL_ID
 
     url = f"https://api.telegram.org/bot{_TG_TOKEN}/sendPhoto"
+    logger.info("[autopub gen] загружаю черновик в TG лог-канал %s...", LOG_CHANNEL_ID)
     try:
         data = aiohttp.FormData()
         data.add_field("chat_id", str(LOG_CHANNEL_ID))
-        data.add_field("caption", f"📝 [autopub draft]\n{caption[:200]}")
-        data.add_field("parse_mode", "HTML")
+        safe_cap = caption[:200].replace("<", "").replace(">", "").replace("&", "")
+        data.add_field("caption", f"📝 [autopub draft]\n{safe_cap}")
         data.add_field("photo", image_bytes, filename="draft.jpg", content_type="image/jpeg")
 
         async with aiohttp.ClientSession() as session:
@@ -120,18 +221,22 @@ async def upload_draft_to_telegram(image_bytes: bytes, caption: str) -> tuple[st
                 body = await resp.json(content_type=None)
 
         if not body.get("ok"):
-            logger.error("autopub: TG upload failed: %s", body)
+            logger.error("[autopub gen] TG upload failed: %s", body)
             return None
 
         photos = body["result"].get("photo", [])
         if not photos:
+            logger.error("[autopub gen] TG upload: нет фото в ответе")
             return None
         largest = max(photos, key=lambda p: p.get("file_size", 0))
+        logger.info("[autopub gen] TG upload OK: file_id=%s...", largest["file_id"][:20])
         return largest["file_id"], largest["file_unique_id"]
     except Exception as exc:
-        logger.error("autopub: TG upload exception: %s", exc)
+        logger.error("[autopub gen] TG upload exception: %s", exc)
         return None
 
+
+# ─── Post text builder ───────────────────────────────────────────────────────
 
 def build_post_text(
     topic: str,
@@ -140,30 +245,85 @@ def build_post_text(
     post_template: str,
     post_cta: str,
     bot_username: str,
+    gemini_caption: str = "",
 ) -> str:
-    """Assemble final post caption from components."""
+    """Assemble final post text as HTML (for Telegram text message with <code> prompt block).
+
+    Structure:
+      {title}
+
+      • Переходи в бот и выбирай раздел свое описание @bot
+      • Отправляй качественное фото, где чётко видны пропорции лица.
+
+      • Перед отправкой добавляй промт в описание (копируй текст одним касанием 👇):
+
+      <code>prompt</code>
+
+      ✅После исправления описания, отправляйте на генерацию.
+      ✅Наслаждаемся эксклюзивом и благодарим разработчика бота, за чудесные фото.
+      ✅Делись своим шедевром в комментариях)))
+    """
+    # Custom template takes priority (user-defined, no HTML enforced)
     if post_template.strip():
         try:
-            return post_template.format(
+            result = post_template.format(
                 topic=topic,
                 caption_intro=caption_intro,
                 prompt=prompt,
                 bot_username=bot_username,
                 cta=post_cta,
             )
+            return result
         except Exception:
             pass
 
-    bot_link = f"@{bot_username}" if bot_username else ""
-    cta = post_cta.strip() or (
-        f"✅ Переходи в бот {bot_link} и выбирай раздел <b>своё описание</b>\n"
-        f"✅ Отправляй фото с описанием\n"
-        f"✅ Перед отправкой добавляй промпт ниже 👇" if bot_username
-        else "✅ Используй промпт ниже 👇 в нашем боте"
-    )
+    title = (caption_intro.strip() or topic.strip())[:80]
+    bot_at = f"@{bot_username}" if bot_username else ""
 
-    return (
-        f"{topic}\n\n"
-        f"{cta}\n\n"
-        f"<code>{prompt}</code>"
-    )
+    # Escape prompt for HTML (< > &)
+    safe_prompt = prompt.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Build all parts except prompt so we know how much space is left (TG caption limit 1024)
+    bot_line = f"\n\n🤖 Отправь своё фото + этот промт в {bot_at} — получи AI-портрет" if bot_at else ""
+    header = f"{title}\n\nСкопируй промт одним нажатием 👇\n\n<code>"
+    footer = f"</code>{bot_line}"
+    max_prompt_len = 1024 - len(header) - len(footer) - 1
+    if max_prompt_len < 50:
+        max_prompt_len = 50
+
+    if len(safe_prompt) <= max_prompt_len:
+        # Fits perfectly — no truncation needed
+        trimmed_prompt = safe_prompt
+    else:
+        # Cut at last space before limit (word boundary)
+        cut = safe_prompt[:max_prompt_len].rfind(" ")
+        if cut < max_prompt_len // 2:
+            cut = max_prompt_len
+        trimmed_prompt = safe_prompt[:cut].rstrip()
+        # Avoid cutting inside an HTML entity (&amp; &lt; &gt;)
+        amp_pos = trimmed_prompt.rfind("&")
+        if amp_pos >= 0 and ";" not in trimmed_prompt[amp_pos:]:
+            trimmed_prompt = trimmed_prompt[:amp_pos].rstrip()
+
+    return f"{header}{trimmed_prompt}{footer}"
+
+
+def build_vk_post_text(
+    topic: str,
+    caption_intro: str,
+    prompt: str,
+    vk_community: str = "picgenai",
+) -> str:
+    """Assemble VK wall post text (plain text, no HTML).
+
+    Structure:
+      {title}
+
+      {prompt}
+
+      🤖 Отправь своё фото + этот промт в сообщения @picgenai — получи AI-портрет
+    """
+    title = (caption_intro.strip() or topic.strip())[:80]
+    community = vk_community.lstrip("@") or "picgenai"
+    footer_line = f"\n\n🤖 Отправь своё фото + этот промт в сообщения сообщества @{community} — получи AI-портрет"
+    return f"{title}\n\n{prompt}{footer_line}"

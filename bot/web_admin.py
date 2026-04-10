@@ -55,6 +55,76 @@ def set_vertex_service(svc: "Any") -> None:
     global _vertex_service
     _vertex_service = svc
 
+
+# ─── Live generation progress (shared state) ─────────────────────────────────
+_gen_progress: dict = {
+    "active": False, "step": 0, "total": 5, "label": "",
+    "pct": 0, "log": [], "done": False, "error": "", "started_at": 0.0,
+}
+
+# ─── Trend selection (manual mode: scheduler waits for admin pick) ────────────
+_trend_sel_event: "asyncio.Event | None" = None
+_trend_sel_result: "dict | None" = None
+
+
+async def wait_for_trend_selection() -> "dict | None":
+    """Scheduler calls this to pause and wait for admin to pick a trend."""
+    global _trend_sel_event, _trend_sel_result
+    import asyncio as _asyncio
+    _trend_sel_event = _asyncio.Event()
+    _trend_sel_result = None
+    await _trend_sel_event.wait()
+    return _trend_sel_result
+
+
+def set_trend_selection(trend: "dict | None") -> None:
+    """Called by the select_trend endpoint to unblock wait_for_trend_selection."""
+    global _trend_sel_result, _trend_sel_event
+    _trend_sel_result = trend
+    if _trend_sel_event is not None:
+        _trend_sel_event.set()
+
+
+def _gen_progress_reset() -> None:
+    global _gen_progress
+    _gen_progress = {
+        "active": True, "step": 0, "total": 5, "label": "Запуск...",
+        "pct": 0, "log": [], "done": False, "error": "", "started_at": time.monotonic(),
+        "thinking_buf": "",   # full thinking text accumulated so far
+        "thinking_sent": 0,   # how many chars of thinking_buf have been sent via SSE
+        "last_post_id": None, # id of last generated post (set on step 5)
+    }
+
+
+def update_gen_progress(
+    step: int, label: str, pct: int,
+    msg: str = "", *, done: bool = False, error: str = "",
+    last_post_id: "int | None" = None,
+    trends: "list | None" = None,
+) -> None:
+    """Called from scheduler._run_generate to broadcast pipeline progress."""
+    global _gen_progress
+    elapsed = round(time.monotonic() - _gen_progress.get("started_at", time.monotonic()), 1)
+    entry = {"t": elapsed, "msg": msg or label, "ok": not error, "err": bool(error)}
+    _gen_progress["log"].append(entry)
+    _gen_progress["step"] = step
+    _gen_progress["label"] = label
+    _gen_progress["pct"] = pct
+    _gen_progress["active"] = not done and not error
+    _gen_progress["done"] = done
+    _gen_progress["error"] = error
+    if last_post_id is not None:
+        _gen_progress["last_post_id"] = last_post_id
+    # Store trend list for SSE (when waiting for admin to pick)
+    _gen_progress["trends"] = trends  # None = no picker needed; list = show picker
+
+
+def update_gen_thinking(delta: str) -> None:
+    """Append a chunk of Gemini thinking text. Called from thread (GIL-safe)."""
+    if not delta:
+        return
+    _gen_progress["thinking_buf"] = _gen_progress.get("thinking_buf", "") + delta
+
 _MSK_OFFSET_HOURS = 3  # UTC+3
 
 
@@ -317,6 +387,22 @@ def _layout(title: str, content: str, active: str = "") -> str:
   .alert-error{{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.2);
     color:var(--red)}}
 
+  /* ── Autopub post card ── */
+  .post-card{{display:grid;grid-template-columns:190px 1fr;gap:14px;margin-bottom:14px}}
+  .pc-img{{min-width:0}}
+  .post-card-btns{{display:flex;flex-wrap:wrap;gap:6px}}
+  .form-grid-2{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}
+  .autopub-tabs{{display:flex;gap:0;border-bottom:1px solid var(--border);
+    margin-bottom:20px;overflow-x:auto;-webkit-overflow-scrolling:touch;
+    scrollbar-width:none}}
+  .autopub-tabs::-webkit-scrollbar{{display:none}}
+  .autopub-tabs a{{padding:10px 18px;text-decoration:none;white-space:nowrap;
+    font-size:.9em;border-bottom:2px solid transparent;flex-shrink:0}}
+  .autopub-tabs a.tab-active{{border-bottom-color:var(--accent)}}
+  .autopub-header{{display:flex;align-items:center;gap:12px;
+    margin-bottom:20px;flex-wrap:wrap}}
+  .gen-hint{{font-size:.8em;color:var(--muted)}}
+
   /* ── Bottom nav (mobile only) ── */
   .bottom-nav{{display:none}}
 
@@ -340,7 +426,7 @@ def _layout(title: str, content: str, active: str = "") -> str:
       gap:3px;padding:6px 4px;color:var(--red);font-size:.7em
     }}
     .bot-logout>span:first-child{{font-size:1.4em;line-height:1}}
-    .main{{padding:16px;padding-bottom:80px}}
+    .main{{padding:12px;padding-bottom:80px}}
     .page-title{{font-size:1.3em}}
     .cards{{grid-template-columns:repeat(2,1fr);gap:10px}}
     .card{{padding:14px}}
@@ -350,6 +436,24 @@ def _layout(title: str, content: str, active: str = "") -> str:
     .toolbar{{flex-direction:column;align-items:stretch}}
     .search-input{{width:100%;flex:none}}
     select{{width:100%;flex:none}}
+
+    /* autopub mobile */
+    .post-card{{grid-template-columns:1fr}}
+    .post-card .pc-img img{{max-height:220px;width:100%;object-fit:cover;
+      border-radius:8px}}
+    .post-card .pc-img>div{{height:100px}}
+    .form-grid-2{{grid-template-columns:1fr}}
+    .form-grid-2>div[style*="grid-column:1/-1"]{{grid-column:1 !important}}
+    .post-card-btns .btn{{flex:1 1 calc(50% - 6px);margin-left:0 !important;
+      text-align:center}}
+    .autopub-header h2{{font-size:1.2em}}
+    .gen-hint{{display:none}}
+    .autopub-tabs a{{padding:8px 12px;font-size:.82em}}
+    .hist-mobile-hide{{display:none}}
+    .hist-table-wrap{{display:none !important}}
+    .hist-mob-list{{display:block !important}}
+    .hist-card{{background:var(--surface);border:1px solid var(--border);
+      border-radius:12px;padding:12px;margin-bottom:10px;display:flex;gap:10px}}
   }}
 </style>
 </head>
@@ -1721,6 +1825,59 @@ def _autopub_status_badge(status: str) -> str:
     return f'<span style="color:{color};font-weight:600">{label}</span>'
 
 
+def _render_post_card(p: dict) -> str:
+    """Render a single autopub post card (module-level, reusable)."""
+    pid = p["id"]
+    status = p["status"]
+    prompt_full = (p.get("prompt") or "").replace('"', "&quot;").replace("<", "&lt;")
+    prompt_short = prompt_full[:300]
+    caption_short = (p.get("caption") or "")[:300].replace("<", "&lt;")
+    topic = p.get("topic", "").replace("<", "&lt;")
+    dt = _msk(p.get("created_at", ""))
+    fuid = p.get("tg_file_unique", "")
+    source_trend = p.get("source_trend", "").replace("<", "&lt;")
+    admin_comment = p.get("admin_comment", "").replace("<", "&lt;")
+    img_src = f"/admin/tg-photo/{fuid}" if fuid else ""
+    img_html = (
+        f'<img src="{img_src}" loading="lazy" style="width:100%;max-height:260px;object-fit:cover;border-radius:8px;cursor:pointer;display:block" onclick="openLightboxUrl(\'{img_src}\')">'
+        if img_src else
+        '<div style="width:100%;height:120px;border-radius:8px;background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.85em">нет фото</div>'
+    )
+    trend_badge = (
+        f'<div style="font-size:.75em;background:rgba(167,139,250,.12);color:var(--accent);border-radius:6px;padding:3px 8px;margin-bottom:6px;display:inline-block">🔥 {source_trend}</div><br>'
+        if source_trend else ""
+    )
+    feedback_badge = (
+        f'<div style="font-size:.75em;background:rgba(251,191,36,.1);color:#fbbf24;border-radius:6px;padding:3px 8px;margin-bottom:6px;display:inline-block">💬 {admin_comment[:60]}{"…" if len(admin_comment) > 60 else ""}</div><br>'
+        if admin_comment else ""
+    )
+    btns = ""
+    if status == "draft":
+        btns += f'<button class="btn btn-primary btn-sm" onclick="postAction({pid},\'approve\')">✅ Одобрить</button>'
+    if status in ("draft", "approved"):
+        btns += f'<button class="btn btn-sm" onclick="postAction({pid},\'publish\')" style="background:var(--green);color:#fff">📣 Опубл.</button>'
+        btns += f'<button class="btn btn-muted btn-sm" onclick="openEditModal({pid})">✏️ Ред.</button>'
+        btns += f'<button class="btn btn-sm" onclick="openFeedbackModal({pid})" style="background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.4);color:#fbbf24">🔄 Перед.</button>'
+        btns += f'<button class="btn btn-danger btn-sm" onclick="postAction({pid},\'reject\')">🗑</button>'
+    return f"""<div class="card post-card" id="post-card-{pid}">
+  <div class="pc-img">{img_html}</div>
+  <div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:5px;gap:6px">
+      <span style="font-weight:600;font-size:.93em;line-height:1.3">{topic}</span>
+      {_autopub_status_badge(status)}
+    </div>
+    <div style="font-size:.78em;color:var(--muted);margin-bottom:6px">{dt}</div>
+    {trend_badge}{feedback_badge}
+    <div style="font-size:.82em;color:var(--text);line-height:1.5;margin-bottom:8px;white-space:pre-wrap">{caption_short}{'…' if len(p.get('caption', '')) > 300 else ''}</div>
+    <details style="margin-bottom:10px">
+      <summary style="font-size:.78em;color:var(--accent);cursor:pointer">Промпт <span style="font-size:.75em;color:var(--muted)">(нажми чтобы скопировать)</span></summary>
+      <pre id="prompt-{pid}" onclick="copyPrompt(this)" data-full-prompt="{prompt_full}" title="Нажми чтобы скопировать весь промпт" style="font-size:.74em;color:var(--muted);white-space:pre-wrap;margin-top:6px;overflow-x:auto;cursor:pointer;padding:8px;border-radius:6px;background:rgba(255,255,255,.03);transition:background .2s" onmouseenter="this.style.background='rgba(167,139,250,.08)'" onmouseleave="this.style.background='rgba(255,255,255,.03)'">{prompt_short}{'…' if len(p.get('prompt', '')) > 300 else ''}</pre>
+    </details>
+    <div class="post-card-btns">{btns}</div>
+  </div>
+</div>"""
+
+
 @_require_auth
 async def handle_autopub(request: web.Request) -> web.Response:
     tab = request.rel_url.query.get("tab", "queue")
@@ -1737,6 +1894,7 @@ async def handle_autopub(request: web.Request) -> web.Response:
 
     queue_posts = drafts + approved
     history_posts = published + errors
+    _edit_posts_map = {p['id']: p for p in queue_posts + history_posts}
 
     # ── Alert ──
     alert_html = ""
@@ -1761,7 +1919,7 @@ async def handle_autopub(request: web.Request) -> web.Response:
     chk = lambda val: "checked" if val else ""
     settings_html = f"""
 <form method="POST" action="/admin/api/autopub/settings">
-<div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+<div class="form-grid-2">
   <div>
     <label class="form-label">Telegram канал (ID или @username)</label>
     <input name="tg_channel_id" value="{settings.get('tg_channel_id','')}" placeholder="например: -1001234567890 или @mychannel" class="form-input">
@@ -1769,6 +1927,13 @@ async def handle_autopub(request: web.Request) -> web.Response:
   <div>
     <label class="form-label">VK группа (ID без минуса)</label>
     <input name="vk_group_id" value="{settings.get('vk_group_id','')}" placeholder="например: 123456789" class="form-input">
+    {"" if __import__("os").getenv("VK_USER_TOKEN") else '''<div style="margin-top:8px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:10px 12px;font-size:.8em;line-height:1.5;color:#fbbf24">
+      ⚠️ <b>VK_USER_TOKEN не задан</b> — публикация в ВК невозможна.<br>
+      Токен группы (VK_BOT_TOKEN) не имеет прав на публикацию постов.<br>
+      Нужен токен <b>пользователя-администратора</b> с правами <code>wall,photos,offline</code>.<br>
+      Получить: <a href="https://vkhost.github.io/" target="_blank" style="color:#fbbf24">vkhost.github.io</a>
+      → выбери приложение → выдай права → скопируй токен из URL → добавь в секреты как <code>VK_USER_TOKEN</code>.
+    </div>'''}
   </div>
   <div>
     <label class="form-label">Постов в день</label>
@@ -1818,82 +1983,109 @@ async def handle_autopub(request: web.Request) -> web.Response:
 </div>"""
 
     # ── Queue tab ──
-    def _post_card(p: dict) -> str:
-        pid = p["id"]
-        status = p["status"]
-        prompt_short = (p.get("prompt") or "")[:200].replace("<", "&lt;")
-        caption_short = (p.get("caption") or "")[:300].replace("<", "&lt;")
-        topic = p.get("topic","").replace("<","&lt;")
-        dt = _msk(p.get("created_at",""))
-        fuid = p.get("tg_file_unique","")
-        img_src = f"/admin/tg-photo/{fuid}" if fuid else ""
-        img_html = (f'<img src="{img_src}" loading="lazy" style="width:100%;max-height:260px;object-fit:cover;border-radius:8px;cursor:pointer;display:block" onclick="openLightboxUrl(\'{img_src}\')">'
-                    if img_src else '<div style="width:100%;height:140px;border-radius:8px;background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;color:var(--muted)">нет фото</div>')
-        btns = ""
-        if status == "draft":
-            btns += f'<button class="btn btn-primary btn-sm" onclick="postAction({pid},\'approve\')">✅ Одобрить</button>'
-        if status in ("draft","approved"):
-            btns += f'<button class="btn btn-muted btn-sm" onclick="openEditModal({pid})" style="margin-left:6px">✏️ Редактировать</button>'
-            btns += f'<button class="btn btn-primary btn-sm" onclick="postAction({pid},\'publish\')" style="margin-left:6px;background:var(--green);border-color:var(--green)">📣 Опубликовать сейчас</button>'
-            btns += f'<button class="btn btn-danger btn-sm" onclick="postAction({pid},\'reject\')" style="margin-left:6px">🗑 Удалить</button>'
-        return f"""<div class="card" style="display:grid;grid-template-columns:200px 1fr;gap:14px;margin-bottom:14px">
-  <div>{img_html}</div>
-  <div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-      <span style="font-weight:600;font-size:.95em">{topic}</span>
-      {_autopub_status_badge(status)}
-    </div>
-    <div style="font-size:.8em;color:var(--muted);margin-bottom:8px">{dt}</div>
-    <div style="font-size:.82em;color:var(--text);line-height:1.5;margin-bottom:8px;white-space:pre-wrap">{caption_short}{'…' if len(p.get('caption',''))>300 else ''}</div>
-    <details style="margin-bottom:10px">
-      <summary style="font-size:.8em;color:var(--accent);cursor:pointer">Промпт</summary>
-      <pre style="font-size:.75em;color:var(--muted);white-space:pre-wrap;margin-top:6px">{prompt_short}{'…' if len(p.get('prompt',''))>200 else ''}</pre>
-    </details>
-    <div style="display:flex;flex-wrap:wrap;gap:6px">{btns}</div>
-  </div>
-</div>"""
-
     if queue_posts:
-        queue_html = "".join(_post_card(p) for p in queue_posts)
+        queue_html = "".join(_render_post_card(p) for p in queue_posts)
     else:
-        queue_html = '<div class="img-empty">Очередь пуста — нажмите «Сгенерировать» чтобы создать первый пост</div>'
+        queue_html = '<div id="queue-empty" class="img-empty">Очередь пуста — нажмите «Сгенерировать» чтобы создать первый пост</div>'
 
-    gen_btn = f'<button class="btn btn-primary" onclick="generatePost()" style="margin-bottom:16px">⚡ Сгенерировать пост</button>'
+    gen_btn = f'''<div style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <button class="btn btn-primary" id="gen-btn" onclick="generatePost(this)">⚡ Сгенерировать</button>
+  <span class="gen-hint">Gemini ищет тренды → придумывает идею → генерирует фото (~60 сек)</span>
+</div>
+<div id="gen-banner" style="display:none;border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.07);border-radius:12px;margin-bottom:16px;padding:14px 16px;font-size:.88em">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px">
+    <span id="gen-label" style="font-weight:600;color:var(--text)">⚙️ Генерация...</span>
+    <span id="gen-bar-txt" style="color:var(--muted);font-size:.82em;white-space:nowrap">0%</span>
+  </div>
+  <div style="background:rgba(255,255,255,.08);border-radius:6px;height:6px;margin-bottom:10px;overflow:hidden">
+    <div id="gen-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#a78bfa,#60a5fa);border-radius:6px;transition:width .4s ease"></div>
+  </div>
+  <div id="gen-log" style="max-height:130px;overflow-y:auto;font-family:monospace;line-height:1.5;margin-bottom:6px"></div>
+  <!-- Inline trend picker (shown when scheduler waits for selection) -->
+  <div id="gen-trend-picker" style="display:none;margin-top:10px;border-top:1px solid rgba(167,139,250,.2);padding-top:12px">
+    <div style="font-size:.85em;color:var(--accent);font-weight:600;margin-bottom:8px">📈 Выберите тренд для поста:</div>
+    <div id="gen-trend-list" style="display:flex;flex-direction:column;gap:6px"></div>
+    <button onclick="submitTrendPick(null)" style="margin-top:8px;width:100%;padding:8px 12px;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.82em;text-align:left">🎲 Случайный — пусть Gemini выберет сам</button>
+  </div>
+  <details id="gen-think-wrap" style="display:none">
+    <summary style="cursor:pointer;font-size:.8em;color:var(--accent);user-select:none;padding:4px 0">🧠 Процесс мышления Gemini <span id="gen-think-chars" style="color:var(--muted)"></span></summary>
+    <div id="gen-thinking" style="margin-top:8px;padding:10px;background:rgba(0,0,0,.25);border-radius:8px;max-height:220px;overflow-y:auto;font-family:monospace;font-size:.76em;color:rgba(200,200,255,.65);white-space:pre-wrap;line-height:1.55;word-break:break-word"></div>
+  </details>
+</div>'''
 
     # ── History tab ──
     if history_posts:
         hist_rows = ""
+        mob_cards = ""
         for p in history_posts:
             pid = p["id"]
             fuid = p.get("tg_file_unique","")
             img_src = f"/admin/tg-photo/{fuid}" if fuid else ""
-            thumb = f'<img src="{img_src}" loading="lazy" style="width:40px;height:40px;object-fit:cover;border-radius:6px" onclick="openLightboxUrl(\'{img_src}\')" style="cursor:pointer">' if img_src else "—"
-            topic = p.get("topic","").replace("<","&lt;")[:60]
+            thumb = f'<img src="{img_src}" loading="lazy" style="width:44px;height:44px;object-fit:cover;border-radius:6px;cursor:pointer" onclick="openLightboxUrl(\'{img_src}\')">' if img_src else '<div style="width:44px;height:44px;border-radius:6px;background:rgba(255,255,255,.05)"></div>'
+            topic = p.get("topic","").replace("<","&lt;")[:55]
             dt_pub = _msk(p.get("published_at","")) or _msk(p.get("created_at",""))
-            tg = f'<a href="https://t.me/c/{str(p.get("tg_msg_id",""))[0:]}" target="_blank" style="color:var(--accent2)">TG</a>' if p.get("tg_msg_id") else "—"
-            vk = f'<a href="https://vk.com/wall-{p.get("vk_post_id","")}" target="_blank" style="color:var(--accent)">VK</a>' if p.get("vk_post_id") else "—"
+            tg_link = f'<a href="https://t.me/c/{p.get("tg_msg_id","")}" target="_blank" style="color:var(--accent2);font-size:.82em">📩 TG</a>' if p.get("tg_msg_id") else ""
+            vk_link = f'<a href="https://vk.com/wall-{p.get("vk_post_id","")}" target="_blank" style="color:var(--accent);font-size:.82em">🅥 VK</a>' if p.get("vk_post_id") else ""
+            tg_td = f'<a href="https://t.me/c/{p.get("tg_msg_id","")}" target="_blank" style="color:var(--accent2)">TG</a>' if p.get("tg_msg_id") else "—"
+            vk_td = f'<a href="https://vk.com/wall-{p.get("vk_post_id","")}" target="_blank" style="color:var(--accent)">VK</a>' if p.get("vk_post_id") else "—"
             err = f'<span style="color:var(--red);font-size:.75em">{p.get("error_text","")[:60]}</span>' if p.get("error_text") else ""
-            hist_rows += f"<tr><td style='padding:6px 8px'>{thumb}</td><td style='padding:6px 4px;font-size:.84em'>{topic}</td><td style='padding:6px 8px'>{_autopub_status_badge(p['status'])}</td><td style='padding:6px 8px;white-space:nowrap;color:var(--muted);font-size:.8em'>{dt_pub}</td><td style='padding:6px 8px'>{tg}</td><td style='padding:6px 8px'>{vk}</td><td style='padding:6px 8px'>{err}<button class='btn btn-danger btn-sm' onclick='postAction({pid},\"delete\")' style='margin-left:4px'>🗑</button></td></tr>"
-        history_html = f'<div class="table-wrap"><table><thead><tr><th>Фото</th><th>Тема</th><th>Статус</th><th>Опубликован</th><th>TG</th><th>VK</th><th></th></tr></thead><tbody>{hist_rows}</tbody></table></div>'
+            hist_rows += (
+                f"<tr>"
+                f"<td style='padding:5px 8px'>{thumb}</td>"
+                f"<td style='padding:5px 4px;font-size:.83em'>{topic}</td>"
+                f"<td style='padding:5px 8px'>{_autopub_status_badge(p['status'])}</td>"
+                f"<td class='hist-mobile-hide' style='padding:5px 8px;white-space:nowrap;color:var(--muted);font-size:.79em'>{dt_pub}</td>"
+                f"<td class='hist-mobile-hide' style='padding:5px 8px'>{tg_td}</td>"
+                f"<td class='hist-mobile-hide' style='padding:5px 8px'>{vk_td}</td>"
+                f"<td style='padding:5px 8px'>{err}<button class='btn btn-danger btn-sm' onclick='postAction({pid},\"delete\")'>🗑</button></td>"
+                f"</tr>"
+            )
+            mc_img = (
+                f'<img src="{img_src}" loading="lazy" onclick="openLightboxUrl(\'{img_src}\')" style="cursor:pointer;object-fit:cover;border-radius:8px;width:52px;height:52px;min-width:52px;flex-shrink:0">'
+                if img_src else
+                f'<div style="width:52px;height:52px;min-width:52px;border-radius:8px;background:rgba(255,255,255,.06);flex-shrink:0"></div>'
+            )
+            mob_cards += (
+                f'<div class="hist-card">'
+                f'{mc_img}'
+                f'<div style="flex:1;min-width:0">'
+                f'<div style="font-size:.86em;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{topic}</div>'
+                f'<div style="font-size:.75em;color:var(--muted);margin-top:2px">{dt_pub}</div>'
+                f'<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+                f'{_autopub_status_badge(p["status"])} {tg_link} {vk_link}'
+                f'<button class="btn btn-danger btn-sm" onclick="postAction({pid},\'delete\')">🗑</button>'
+                f'</div>{err}</div></div>'
+            )
+        history_html = (
+            f'<div class="table-wrap hist-table-wrap">'
+            f'<table><thead><tr>'
+            f'<th>Фото</th><th>Тема</th><th>Статус</th>'
+            f'<th class="hist-mobile-hide">Опубликован</th>'
+            f'<th class="hist-mobile-hide">TG</th>'
+            f'<th class="hist-mobile-hide">VK</th>'
+            f'<th></th>'
+            f'</tr></thead><tbody>{hist_rows}</tbody></table></div>'
+            f'<div class="hist-mob-list" style="display:none">{mob_cards}</div>'
+        )
     else:
         history_html = '<div class="img-empty">Нет опубликованных постов</div>'
 
     content = f"""
 {alert_html}
 
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-  <h2 style="margin:0">📣 Автопостинг</h2>
+<div class="autopub-header">
+  <h2 style="margin:0;font-size:1.35em">📣 Автопостинг</h2>
   {enabled_badge}
-  <span style="color:var(--muted);font-size:.85em">Сегодня опубликовано: {posts_today} / {settings.get('posts_per_day',3)}</span>
+  <span style="color:var(--muted);font-size:.83em">Опубликовано: {posts_today} / {settings.get('posts_per_day',3)}</span>
 </div>
 
-<div class="tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:20px">
-  <a href="/admin/autopub?tab=queue" class="{tab_cls('queue')}" style="padding:10px 20px;text-decoration:none;color:{'var(--text)' if tab=='queue' else 'var(--muted)'};border-bottom:{'2px solid var(--accent)' if tab=='queue' else '2px solid transparent'};font-size:.9em">⏳ Очередь ({len(queue_posts)})</a>
-  <a href="/admin/autopub?tab=settings" class="{tab_cls('settings')}" style="padding:10px 20px;text-decoration:none;color:{'var(--text)' if tab=='settings' else 'var(--muted)'};border-bottom:{'2px solid var(--accent)' if tab=='settings' else '2px solid transparent'};font-size:.9em">⚙️ Настройки</a>
-  <a href="/admin/autopub?tab=history" class="{tab_cls('history')}" style="padding:10px 20px;text-decoration:none;color:{'var(--text)' if tab=='history' else 'var(--muted)'};border-bottom:{'2px solid var(--accent)' if tab=='history' else '2px solid transparent'};font-size:.9em">📋 История ({len(history_posts)})</a>
+<div class="autopub-tabs">
+  <a href="/admin/autopub?tab=queue" class="{'tab-active' if tab=='queue' else ''}" style="color:{'var(--text)' if tab=='queue' else 'var(--muted)'}">⏳ Очередь ({len(queue_posts)})</a>
+  <a href="/admin/autopub?tab=settings" class="{'tab-active' if tab=='settings' else ''}" style="color:{'var(--text)' if tab=='settings' else 'var(--muted)'}">⚙️ Настройки</a>
+  <a href="/admin/autopub?tab=history" class="{'tab-active' if tab=='history' else ''}" style="color:{'var(--text)' if tab=='history' else 'var(--muted)'}">📋 История ({len(history_posts)})</a>
 </div>
 
-{'<div>' + gen_btn + queue_html + '</div>' if tab == 'queue' else ''}
+{'<div>' + gen_btn + '<div id="queue-list">' + queue_html + '</div></div>' if tab == 'queue' else ''}
 {'<div>' + settings_html + '</div>' if tab == 'settings' else ''}
 {'<div>' + history_html + '</div>' if tab == 'history' else ''}
 
@@ -1928,7 +2120,7 @@ async def handle_autopub(request: web.Request) -> web.Response:
 </div>
 
 <script>
-var _editPosts = {json.dumps({{p['id']: p for p in queue_posts + history_posts}}, ensure_ascii=False).replace('</','<\\/') if (queue_posts or history_posts) else '{{}}'};
+var _editPosts = {json.dumps(_edit_posts_map, ensure_ascii=False).replace('</','<\\/') if _edit_posts_map else '{{}}'};
 
 function openLightboxUrl(src){{
   document.getElementById('lightbox-img').src=src;
@@ -1939,16 +2131,231 @@ function closeLightbox(){{
   document.getElementById('lightbox-img').src='';
 }}
 document.addEventListener('keydown',function(e){{if(e.key==='Escape')closeLightbox();}});
+function copyPrompt(el){{
+  var text = el.dataset.fullPrompt || el.innerText;
+  navigator.clipboard.writeText(text).then(function(){{
+    var orig = el.style.background;
+    el.style.background = 'rgba(74,222,128,.15)';
+    var origColor = el.style.color;
+    el.style.color = '#4ade80';
+    setTimeout(function(){{
+      el.style.background = orig;
+      el.style.color = origColor;
+    }}, 1200);
+  }}).catch(function(){{
+    var r = document.createRange();
+    r.selectNode(el);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(r);
+  }});
+}}
 
-async function generatePost(){{
-  var btn=event.target; btn.disabled=true; btn.textContent='⏳ Генерирую...';
+/* ── Live generation progress via SSE ── */
+var _genES = null;
+var _genDone = false;
+
+function _genPanel(){{ return document.getElementById('gen-banner'); }}
+
+function _genSetBar(pct){{
+  var b = document.getElementById('gen-bar');
+  if(b) b.style.width = pct+'%';
+  var t = document.getElementById('gen-bar-txt');
+  if(t) t.textContent = pct+'%';
+}}
+
+function _genAddLog(entry){{
+  var box = document.getElementById('gen-log');
+  if(!box) return;
+  var div = document.createElement('div');
+  div.style.cssText='padding:3px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:.82em;display:flex;gap:8px;align-items:baseline';
+  var ts = document.createElement('span');
+  ts.style.cssText='color:var(--muted);min-width:42px;flex-shrink:0';
+  ts.textContent = '+'+entry.t+'s';
+  var msg = document.createElement('span');
+  msg.style.color = entry.err ? '#f87171' : (entry.ok ? 'var(--text)' : 'var(--muted)');
+  if(entry.err) msg.textContent = '❌ '+entry.msg;
+  else msg.textContent = entry.msg;
+  div.appendChild(ts); div.appendChild(msg);
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}}
+
+function _genShowPanel(label, pct){{
+  var p = _genPanel();
+  if(!p) return;
+  p.style.display='block';
+  var lbl = document.getElementById('gen-label');
+  if(lbl) lbl.textContent = label;
+  _genSetBar(pct);
+}}
+
+function _genAppendThinking(delta){{
+  if(!delta) return;
+  var wrap = document.getElementById('gen-think-wrap');
+  var box  = document.getElementById('gen-thinking');
+  var chars= document.getElementById('gen-think-chars');
+  if(!wrap||!box) return;
+  wrap.style.display='block';
+  box.textContent += delta;
+  box.scrollTop = box.scrollHeight;
+  if(chars) chars.textContent = '(' + box.textContent.length + ' симв.)';
+}}
+
+function _genResetThinking(){{
+  var wrap=document.getElementById('gen-think-wrap');
+  var box=document.getElementById('gen-thinking');
+  var chars=document.getElementById('gen-think-chars');
+  if(wrap) wrap.style.display='none';
+  if(box) box.textContent='';
+  if(chars) chars.textContent='';
+}}
+
+async function _genInjectCard(postId){{
+  if(!postId) return;
+  try{{
+    var r=await fetch('/admin/api/autopub/queue-fragment?id='+postId);
+    var html=await r.text();
+    var list=document.getElementById('queue-list');
+    if(list && html.trim()){{
+      var empty=document.getElementById('queue-empty');
+      if(empty) empty.remove();
+      var tmp=document.createElement('div');
+      tmp.innerHTML=html;
+      list.insertBefore(tmp.firstChild, list.firstChild);
+    }}
+  }}catch(e){{ console.warn('queue-fragment fetch failed',e); }}
+}}
+
+function _genConnectSSE(){{
+  if(_genES){{ _genES.close(); _genES=null; }}
+  _genES = new EventSource('/admin/api/autopub/stream');
+  _genES.onmessage = function(e){{
+    var d;
+    try{{ d=JSON.parse(e.data); }}catch(ex){{ return; }}
+
+    if(d.new_log && d.new_log.length){{
+      d.new_log.forEach(function(entry){{ _genAddLog(entry); }});
+    }}
+
+    if(d.thinking_delta){{ _genAppendThinking(d.thinking_delta); }}
+
+    // Trend picker: show when scheduler is waiting for selection
+    var picker=document.getElementById('gen-trend-picker');
+    var tlist=document.getElementById('gen-trend-list');
+    if(d.trends && d.trends.length && picker){{
+      if(picker.style.display==='none'){{
+        tlist.innerHTML='';
+        d.trends.forEach(function(t){{
+          var btn=document.createElement('button');
+          btn.style.cssText='width:100%;padding:9px 13px;background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.25);border-radius:8px;color:var(--text);cursor:pointer;font-size:.85em;text-align:left;transition:.15s';
+          btn.onmouseover=function(){{this.style.background='rgba(167,139,250,.22)';}};
+          btn.onmouseout=function(){{this.style.background='rgba(167,139,250,.1)';}};
+          var ctx=t.context?(' <span style="color:var(--muted);font-size:.8em">— '+t.context.slice(0,80)+'</span>'):'';
+          btn.innerHTML='<b>'+t.trend+'</b>'+ctx;
+          btn.onclick=(function(trend){{return function(){{submitTrendPick(trend);}};}})(t);
+          tlist.appendChild(btn);
+        }});
+        picker.style.display='block';
+      }}
+    }} else if(picker && d.trends===null && picker.style.display!=='none'){{
+      picker.style.display='none';
+    }}
+
+    _genShowPanel(d.label || '⚙️ Генерация...', d.pct || 0);
+
+    if(d.error){{
+      _genES.close(); _genES=null;
+      var p=_genPanel();
+      if(p){{
+        p.style.borderColor='rgba(248,113,113,.4)';
+        p.style.background='rgba(248,113,113,.08)';
+      }}
+      var lbl=document.getElementById('gen-label');
+      if(lbl) lbl.textContent='❌ Ошибка: '+d.error;
+      _genSetBar(0);
+      var gb=document.getElementById('gen-btn');
+      if(gb){{ gb.disabled=false; gb.textContent='⚡ Сгенерировать пост'; }}
+      return;
+    }}
+
+    if(d.done){{
+      _genDone=true;
+      _genES.close(); _genES=null;
+      _genSetBar(100);
+      var p=_genPanel();
+      if(p){{ p.style.borderColor='rgba(52,211,153,.4)'; p.style.background='rgba(52,211,153,.08)'; }}
+      var gb=document.getElementById('gen-btn');
+      if(gb){{ gb.disabled=false; gb.textContent='⚡ Сгенерировать пост'; }}
+      _genInjectCard(d.last_post_id).then(function(){{
+        setTimeout(function(){{
+          var p2=_genPanel();
+          if(p2) p2.style.display='none';
+          _genResetThinking();
+        }}, 3500);
+      }});
+    }}
+  }};
+  _genES.onerror = function(){{
+    if(_genDone){{ _genES.close(); _genES=null; }}
+  }};
+}}
+
+async function submitTrendPick(trend){{
+  // trend = object or null (random)
+  var picker=document.getElementById('gen-trend-picker');
+  if(picker) picker.style.display='none';
+  try{{
+    await fetch('/admin/api/autopub/select_trend',{{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify(trend ? {{trend:trend}} : {{}}),
+    }});
+  }}catch(e){{ console.warn('select_trend error',e); }}
+}}
+
+async function generatePost(btn){{
+  btn.id='gen-btn';
+  btn.disabled=true; btn.textContent='⏳ Запускаю...';
   try{{
     var r=await fetch('/admin/api/autopub/generate',{{method:'POST'}});
     var d=await r.json();
-    if(d.ok) location.href='/admin/autopub?tab=queue&msg=generated';
-    else alert('Ошибка: '+(d.error||'неизвестная'));
-  }}finally{{ btn.disabled=false; btn.textContent='⚡ Сгенерировать пост'; }}
+    if(d.ok){{
+      btn.textContent='⏳ Генерация...';
+      _genDone=false;
+      var p=_genPanel();
+      if(p){{
+        p.style.display='block';
+        p.style.borderColor='rgba(167,139,250,.3)';
+        p.style.background='rgba(167,139,250,.07)';
+        var logBox=document.getElementById('gen-log');
+        if(logBox) logBox.innerHTML='';
+        _genSetBar(0);
+        _genResetThinking();
+      }}
+      _genConnectSSE();
+    }} else {{
+      alert('Ошибка: '+(d.error||'неизвестная'));
+      btn.disabled=false; btn.textContent='⚡ Сгенерировать пост';
+    }}
+  }}catch(e){{
+    alert('Fetch error: '+e);
+    btn.disabled=false; btn.textContent='⚡ Сгенерировать пост';
+  }}
 }}
+
+/* Auto-connect SSE if generation is already running (after page reload) */
+(function(){{
+  fetch('/admin/api/autopub/status').then(function(r){{ return r.json(); }}).then(function(d){{
+    if(d.active){{
+      _genDone=false;
+      var p=_genPanel();
+      if(p){{ p.style.display='block'; p.style.borderColor='rgba(167,139,250,.3)'; p.style.background='rgba(167,139,250,.07)'; }}
+      _genConnectSSE();
+      var gb=document.getElementById('gen-btn');
+      if(gb){{ gb.disabled=true; gb.textContent='⏳ Генерация...'; }}
+    }}
+  }}).catch(function(){{}});
+}})();
 
 async function postAction(id, action){{
   if(action==='reject'||action==='delete'){{
@@ -1985,7 +2392,64 @@ async function saveEdit(){{
   if(d.ok){{ closeEditModal(); location.reload(); }}
   else alert('Ошибка: '+(d.error||d));
 }}
-</script>"""
+
+function openFeedbackModal(id){{
+  document.getElementById('feedback-post-id').value=id;
+  document.getElementById('feedback-text').value='';
+  document.getElementById('feedback-modal').style.display='flex';
+  setTimeout(()=>document.getElementById('feedback-text').focus(),100);
+}}
+function closeFeedbackModal(){{ document.getElementById('feedback-modal').style.display='none'; }}
+
+async function submitFeedback(btn){{
+  var id=document.getElementById('feedback-post-id').value;
+  var comment=document.getElementById('feedback-text').value.trim();
+  if(!comment){{ alert('Напишите комментарий — что именно исправить'); return; }}
+  btn.disabled=true; btn.textContent='⏳ Отправляю...';
+  try{{
+    var r=await fetch('/admin/api/autopub/posts/'+id+'/reject_feedback',{{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify({{comment:comment}})
+    }});
+    var d=await r.json();
+    if(d.ok){{
+      closeFeedbackModal();
+      _genDone=false;
+      var p=_genPanel();
+      if(p){{
+        p.style.display='block';
+        p.style.borderColor='rgba(251,191,36,.3)';
+        p.style.background='rgba(251,191,36,.07)';
+        var logBox=document.getElementById('gen-log');
+        if(logBox) logBox.innerHTML='';
+        _genSetBar(0);
+        _genResetThinking();
+        var lbl=document.getElementById('gen-label');
+        if(lbl) lbl.textContent='🔄 Перегенерация с фидбэком...';
+      }}
+      _genConnectSSE();
+      var gb=document.getElementById('gen-btn');
+      if(gb){{ gb.disabled=true; gb.textContent='⏳ Перегенерация...'; }}
+    }} else alert('Ошибка: '+(d.error||d));
+  }}catch(e){{ alert('Ошибка: '+e); }}
+  finally{{ btn.disabled=false; btn.textContent='🔄 Переделать'; }}
+}}
+</script>
+
+<div id="feedback-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center">
+  <div style="background:#14122a;border:1px solid var(--border);border-radius:16px;padding:28px;width:min(480px,94vw);position:relative">
+    <h3 style="margin:0 0 6px">🔄 Переделать пост</h3>
+    <p style="color:var(--muted);font-size:.85em;margin:0 0 16px">Напишите что не так — ИИ учтёт фидбэк и сгенерирует новый пост</p>
+    <input type="hidden" id="feedback-post-id">
+    <textarea id="feedback-text" class="form-input" rows="4"
+      placeholder="Например: слишком общая тема, хочу про весну и цветы; или: картинка должна быть более минималистичной; или: текст слишком длинный"></textarea>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+      <button class="btn btn-muted" onclick="closeFeedbackModal()">Отмена</button>
+      <button class="btn btn-primary" onclick="submitFeedback(this)" style="background:rgba(251,191,36,.2);border-color:rgba(251,191,36,.5);color:#fbbf24">🔄 Переделать</button>
+    </div>
+  </div>
+</div>"""
 
     return web.Response(text=_layout("Автопостинг", content, "autopub"), content_type="text/html")
 
@@ -2017,19 +2481,71 @@ async def api_autopub_settings(request: web.Request) -> web.Response:
 
 
 @_api_require_auth
-async def api_autopub_generate(request: web.Request) -> web.Response:
-    """Trigger immediate post generation (runs in background task)."""
+async def api_autopub_fetch_trends(request: web.Request) -> web.Response:
+    """Fetch current trends (for manual trend picker before generation)."""
     if _vertex_service is None:
         return web.Response(text=json.dumps({"ok": False, "error": "vertex service not ready"}),
                             content_type="application/json", status=503)
     try:
+        from bot.autopub.generator import search_current_trends
+        import bot.db as _db2
+        recent_topics = _db2.autopub_get_recent_topics(limit=30)
+        trends = await search_current_trends(_vertex_service, used_topics=recent_topics)
+        return web.Response(
+            text=json.dumps({"ok": True, "trends": trends or []}),
+            content_type="application/json",
+        )
+    except Exception as e:
+        logger.exception("[autopub] api_autopub_fetch_trends error")
+        return web.Response(text=json.dumps({"ok": False, "error": str(e)}),
+                            content_type="application/json", status=500)
+
+
+@_api_require_auth
+async def api_autopub_generate(request: web.Request) -> web.Response:
+    """Trigger immediate post generation (runs in background task).
+    Body (optional JSON): {"chosen_trend": {"trend": "...", "context": "..."}}
+    """
+    logger.info("[autopub] admin нажал 'Сгенерировать пост'")
+    if _vertex_service is None:
+        logger.error("[autopub] _vertex_service is None — VertexAI не инициализирован")
+        return web.Response(text=json.dumps({"ok": False, "error": "vertex service not ready"}),
+                            content_type="application/json", status=503)
+    try:
+        chosen_trend = None
+        try:
+            body = await request.json()
+            chosen_trend = body.get("chosen_trend") or None
+        except Exception:
+            pass
         settings = _db.autopub_get_settings()
+        logger.info("[autopub] настройки: tg_channel=%r  vk_group=%r  bot=%r  trend=%r",
+                    settings.get("tg_channel_id"), settings.get("vk_group_id"),
+                    settings.get("bot_username"),
+                    chosen_trend.get("trend") if chosen_trend else "random")
         import asyncio
         from bot.autopub.scheduler import _run_generate
-        asyncio.create_task(_run_generate(_vertex_service, settings))
+        _gen_progress_reset()
+        asyncio.create_task(_run_generate(_vertex_service, settings, chosen_trend=chosen_trend, manual=True))
+        logger.info("[autopub] задача генерации запущена в фоне (manual=True)")
         return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
     except Exception as e:
-        logger.exception("api_autopub_generate error")
+        logger.exception("[autopub] api_autopub_generate error")
+        return web.Response(text=json.dumps({"ok": False, "error": str(e)}),
+                            content_type="application/json", status=500)
+
+
+@_api_require_auth
+async def api_autopub_select_trend(request: web.Request) -> web.Response:
+    """Admin picks a trend from the SSE trend picker. Body: {"trend": {...}} or {} for random."""
+    try:
+        body = await request.json()
+        trend = body.get("trend") or None  # None = pick random
+        set_trend_selection(trend)
+        logger.info("[autopub] trend selected: %r", trend.get("trend") if trend else "random")
+        return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
+    except Exception as e:
+        logger.exception("[autopub] api_autopub_select_trend error")
         return web.Response(text=json.dumps({"ok": False, "error": str(e)}),
                             content_type="application/json", status=500)
 
@@ -2063,12 +2579,19 @@ async def api_autopub_post_action(request: web.Request) -> web.Response:
 
             async def _do_pub():
                 from bot.autopub.publisher import publish_to_telegram, publish_to_vk
+                from bot.autopub.generator import build_vk_post_text
                 import datetime
                 _MSK2 = datetime.timezone(datetime.timedelta(hours=3))
                 tg_channel = settings.get("tg_channel_id","").strip()
                 vk_group   = settings.get("vk_group_id","").strip()
                 tg_msg_id  = await publish_to_telegram(tg_channel, post["tg_file_id"], post["caption"]) if tg_channel else None
-                vk_post_id = await publish_to_vk(vk_group, post["tg_file_id"], post["caption"])      if vk_group   else None
+                vk_text    = build_vk_post_text(
+                    topic=post.get("topic", ""),
+                    caption_intro=post.get("topic", ""),
+                    prompt=post.get("prompt", ""),
+                    vk_community="picgenai",
+                )
+                vk_post_id = await publish_to_vk(vk_group, post["tg_file_id"], vk_text) if vk_group else None
                 status = "published" if (tg_msg_id or vk_post_id) else "error"
                 _db.autopub_update_post(post_id, status=status, tg_msg_id=tg_msg_id,
                                         vk_post_id=vk_post_id,
@@ -2086,12 +2609,119 @@ async def api_autopub_post_action(request: web.Request) -> web.Response:
                 _db.autopub_update_post(post_id, **fields)
             return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
 
+        elif action == "reject_feedback":
+            if _vertex_service is None:
+                return web.Response(text=json.dumps({"ok": False, "error": "vertex service not ready"}),
+                                    content_type="application/json", status=503)
+            data = await request.json()
+            comment = str(data.get("comment", "")).strip()
+            if not comment:
+                return web.Response(text=json.dumps({"ok": False, "error": "comment required"}),
+                                    content_type="application/json", status=400)
+            logger.info("[autopub] admin отклонил пост id=%s с фидбэком: %r", post_id, comment[:80])
+            _db.autopub_delete_post(post_id)
+            settings = _db.autopub_get_settings()
+            import asyncio
+            from bot.autopub.scheduler import _run_generate
+            _gen_progress_reset()
+            asyncio.create_task(_run_generate(_vertex_service, settings, admin_feedback=comment))
+            logger.info("[autopub] запущена перегенерация с фидбэком")
+            return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
+
         return web.Response(text=json.dumps({"ok": False, "error": "unknown action"}),
                             content_type="application/json", status=400)
     except Exception as e:
         logger.exception("api_autopub_post_action error")
         return web.Response(text=json.dumps({"ok": False, "error": str(e)}),
                             content_type="application/json", status=500)
+
+
+@_api_require_auth
+async def api_autopub_status(request: web.Request) -> web.Response:
+    """Return current queue count and generation active flag."""
+    try:
+        drafts   = _db.autopub_get_posts(status="draft",    limit=100)
+        approved = _db.autopub_get_posts(status="approved", limit=100)
+        queue_count = len(drafts) + len(approved)
+        return web.Response(text=json.dumps({
+            "ok": True,
+            "queue_count": queue_count,
+            "active": _gen_progress.get("active", False),
+        }), content_type="application/json")
+    except Exception as e:
+        return web.Response(text=json.dumps({"ok": False, "queue_count": 0, "active": False, "error": str(e)}),
+                            content_type="application/json", status=500)
+
+
+async def api_autopub_stream(request: web.Request) -> web.StreamResponse:
+    """SSE stream — pushes live generation progress to the browser."""
+    import asyncio as _aio
+
+    # Auth check — same stateless HMAC as all other admin handlers
+    if not _is_auth(request):
+        return web.Response(status=403, text="Unauthorized")
+
+    resp = web.StreamResponse(headers={
+        "Content-Type":  "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    })
+    await resp.prepare(request)
+
+    last_log_len = 0
+    last_thinking_len = 0
+    try:
+        while True:
+            prog = _gen_progress
+            # New log entries
+            current_log = prog.get("log", [])
+            new_entries = current_log[last_log_len:]
+            last_log_len = len(current_log)
+            # Thinking delta (new chars since last send)
+            thinking_full = prog.get("thinking_buf", "")
+            thinking_delta = thinking_full[last_thinking_len:]
+            last_thinking_len = len(thinking_full)
+
+            payload = {
+                "active":        prog.get("active", False),
+                "step":          prog.get("step", 0),
+                "total":         prog.get("total", 5),
+                "label":         prog.get("label", ""),
+                "pct":           prog.get("pct", 0),
+                "done":          prog.get("done", False),
+                "error":         prog.get("error", ""),
+                "new_log":       new_entries,
+                "thinking_delta": thinking_delta,
+                "last_post_id":  prog.get("last_post_id"),
+                "trends":        prog.get("trends"),  # list when trend picker needed, else None
+            }
+            data = json.dumps(payload, ensure_ascii=False)
+            await resp.write(f"data: {data}\n\n".encode())
+
+            if prog.get("done") or prog.get("error"):
+                break
+
+            await _aio.sleep(0.4)
+    except (ConnectionResetError, Exception):
+        pass
+
+    return resp
+
+
+@_require_auth
+async def api_autopub_queue_fragment(request: web.Request) -> web.Response:
+    """Return rendered HTML for a single post card (for live injection)."""
+    post_id_str = request.rel_url.query.get("id", "")
+    try:
+        post_id = int(post_id_str)
+    except (ValueError, TypeError):
+        return web.Response(text="", content_type="text/html")
+    posts = _db.autopub_get_posts(status="draft", limit=50) + _db.autopub_get_posts(status="approved", limit=50)
+    post = next((p for p in posts if p["id"] == post_id), None)
+    if post is None:
+        return web.Response(text="", content_type="text/html")
+    return web.Response(text=_render_post_card(post), content_type="text/html")
 
 
 # ─── Register routes ─────────────────────────────────────────────────────────
@@ -2108,7 +2738,12 @@ def register_admin_routes(app: web.Application) -> None:
     app.router.add_get("/admin/api-keys",                 handle_api_keys)
     app.router.add_get("/admin/autopub",                  handle_autopub)
     app.router.add_post("/admin/api/autopub/settings",       api_autopub_settings)
+    app.router.add_get("/admin/api/autopub/trends",          api_autopub_fetch_trends)
     app.router.add_post("/admin/api/autopub/generate",       api_autopub_generate)
+    app.router.add_post("/admin/api/autopub/select_trend",   api_autopub_select_trend)
+    app.router.add_get("/admin/api/autopub/status",          api_autopub_status)
+    app.router.add_get("/admin/api/autopub/stream",          api_autopub_stream)
+    app.router.add_get("/admin/api/autopub/queue-fragment",  api_autopub_queue_fragment)
     app.router.add_post("/admin/api/autopub/posts/{post_id}/{action}", api_autopub_post_action)
     app.router.add_post("/admin/api/users/{uid}/credits",    api_credits)
     app.router.add_post("/admin/api/users/{uid}/block",      api_block)
