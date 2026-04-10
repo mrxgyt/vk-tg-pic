@@ -86,7 +86,33 @@ _PAGE_SIZE = 50
 
 _ADMIN_TG_ID = 6014789391          # admin Telegram user ID for 2FA codes
 _2FA_TTL = 300                      # seconds the code is valid
-_pending_2fa: dict[str, tuple[str, float]] = {}  # token → (code, expires_at)
+_pending_2fa: dict[str, tuple[str, float, int]] = {}  # token → (code, expires_at, attempts)
+
+# ── Brute-force protection ─────────────────────────────────────────────────
+_MAX_LOGIN_ATTEMPTS = 5            # wrong passwords before lockout
+_LOCKOUT_SECONDS    = 900          # 15 minutes
+_login_failures: dict[str, tuple[int, float]] = {}  # ip → (count, lockout_until)
+
+def _check_lockout(ip: str) -> bool:
+    """Return True (blocked) if IP is currently locked out."""
+    entry = _login_failures.get(ip)
+    if entry is None:
+        return False
+    count, until = entry
+    if count >= _MAX_LOGIN_ATTEMPTS:
+        if time.time() < until:
+            return True
+        _login_failures.pop(ip, None)
+    return False
+
+def _record_failure(ip: str) -> None:
+    entry = _login_failures.get(ip)
+    count = (entry[0] if entry else 0) + 1
+    until = time.time() + _LOCKOUT_SECONDS if count >= _MAX_LOGIN_ATTEMPTS else 0.0
+    _login_failures[ip] = (count, until)
+
+def _clear_failure(ip: str) -> None:
+    _login_failures.pop(ip, None)
 
 
 # ─── Auth ────────────────────────────────────────────────────────────────────
@@ -440,26 +466,32 @@ async def handle_login(request: web.Request) -> web.Response:
 
     if request.method == "POST":
         data = await request.post()
+        ip = request.headers.get("X-Forwarded-For", request.remote or "").split(",")[0].strip() or "unknown"
 
         # ── Step 1: password ─────────────────────────────────
         if step == "password":
+            if _check_lockout(ip):
+                html = _login_page_html("password", "", "Слишком много попыток. Подождите 15 минут.")
+                return web.Response(text=html, content_type="text/html")
             pwd = data.get("password", "")
             if hmac.compare_digest(
                 hashlib.sha256(pwd.encode()).hexdigest(),
                 hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest(),
             ):
+                _clear_failure(ip)
                 code = f"{random.randint(0, 999999):06d}"
                 tok = secrets.token_urlsafe(24)
-                _pending_2fa[tok] = (code, time.time() + _2FA_TTL)
+                _pending_2fa[tok] = (code, time.time() + _2FA_TTL, 0)
                 sent = await _send_2fa_code(code)
                 if not sent:
                     # If TG unavailable fall back — skip 2FA and log in directly
                     logger.warning("2FA code send failed — skipping 2FA, logging in directly")
                     resp = web.HTTPFound("/admin/dashboard")
-                    resp.set_cookie(_COOKIE_NAME, _make_token(), max_age=_COOKIE_MAX_AGE, httponly=True)
+                    resp.set_cookie(_COOKIE_NAME, _make_token(), max_age=_COOKIE_MAX_AGE, httponly=True, samesite="Lax")
                     raise resp
                 raise web.HTTPFound(f"/admin/login?step=2fa&tok={tok}")
             else:
+                _record_failure(ip)
                 html = _login_page_html("password", "", "Неверный пароль")
                 return web.Response(text=html, content_type="text/html")
 
@@ -471,18 +503,25 @@ async def handle_login(request: web.Request) -> web.Response:
             if entry is None:
                 html = _login_page_html("password", "", "Сессия истекла. Введите пароль снова.")
                 return web.Response(text=html, content_type="text/html")
-            correct_code, expires_at = entry
+            correct_code, expires_at, attempts = entry
             if time.time() > expires_at:
                 _pending_2fa.pop(tok, None)
                 html = _login_page_html("password", "", "Код истёк. Войдите снова.")
                 return web.Response(text=html, content_type="text/html")
+            if attempts >= 5:
+                _pending_2fa.pop(tok, None)
+                _record_failure(ip)
+                html = _login_page_html("password", "", "Превышено число попыток. Войдите снова.")
+                return web.Response(text=html, content_type="text/html")
             if hmac.compare_digest(entered, correct_code):
                 _pending_2fa.pop(tok, None)
+                _clear_failure(ip)
                 resp = web.HTTPFound("/admin/dashboard")
-                resp.set_cookie(_COOKIE_NAME, _make_token(), max_age=_COOKIE_MAX_AGE, httponly=True)
+                resp.set_cookie(_COOKIE_NAME, _make_token(), max_age=_COOKIE_MAX_AGE, httponly=True, samesite="Lax")
                 raise resp
             else:
-                html = _login_page_html("2fa", tok, "Неверный код. Попробуйте ещё раз.")
+                _pending_2fa[tok] = (correct_code, expires_at, attempts + 1)
+                html = _login_page_html("2fa", tok, f"Неверный код. Попыток осталось: {5 - attempts - 1}.")
                 return web.Response(text=html, content_type="text/html")
 
     # ── GET ──────────────────────────────────────────────────
@@ -1449,7 +1488,7 @@ async def handle_api_keys(request: web.Request) -> web.Response:
     <button class="btn btn-primary" onclick="addKey()" style="white-space:nowrap">Добавить ключ</button>
   </div>
   <p style="color:var(--muted);font-size:.78em;margin-top:10px">
-    Ключ хранится в БД. После добавления/удаления нужен <b>перезапуск сервиса</b> чтобы изменения вступили в силу.
+    Ключ хранится в БД и применяется <b>немедленно</b> без перезапуска сервиса.
   </p>
   <p style="color:var(--muted);font-size:.78em;margin-top:6px;line-height:1.6">
     ⚡ <b>В работе</b> — прямо сейчас обрабатывает запрос(ы)<br>
@@ -1574,7 +1613,7 @@ async function addKey() {{
 }}
 
 async function deleteKey(idx) {{
-  if (!confirm('Удалить ключ #' + (idx+1) + '?\\nПосле удаления нужен перезапуск сервиса.')) return;
+  if (!confirm('Удалить ключ #' + (idx+1) + '? Изменение применится немедленно.')) return;
   const r = await fetch('/admin/api/keys/delete', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{index:idx}})}});
   const d = await r.json();
   if (d.ok) location.href = '/admin/api-keys?msg=deleted';
@@ -1618,6 +1657,8 @@ async def api_keys_add(request: web.Request) -> web.Response:
         added = _key_store.add_key(key)
         if not added:
             return web.Response(text=json.dumps({"ok": False, "error": "exists"}), content_type="application/json", status=400)
+        if _vertex_service is not None:
+            _vertex_service.reload_keys()
         logger.info("admin: API key added (masked=%s)", _key_store.mask_key(key))
         return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
     except Exception as e:
@@ -1633,6 +1674,8 @@ async def api_keys_delete(request: web.Request) -> web.Response:
         removed = _key_store.remove_key(index)
         if removed is None:
             return web.Response(text=json.dumps({"ok": False, "error": "not_found"}), content_type="application/json", status=404)
+        if _vertex_service is not None:
+            _vertex_service.reload_keys()
         logger.info("admin: API key removed (masked=%s)", _key_store.mask_key(removed))
         return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
     except Exception as e:
