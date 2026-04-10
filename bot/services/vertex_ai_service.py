@@ -75,11 +75,16 @@ def _is_model_error(exc: BaseException) -> bool:
 
 
 def _is_auth_error(exc: BaseException) -> bool:
-    """401/403 — the key is disabled, revoked, or lacks permissions."""
+    """401/403 — the key is disabled, revoked, or lacks permissions.
+    Note: pydantic errors contain 'extra_forbidden' — must NOT be treated as auth errors.
+    """
     msg = str(exc).lower()
+    # Pydantic ValidationError contains "extra_forbidden" — skip it
+    if "extra_forbidden" in msg or "validation error" in msg:
+        return False
     if "401" in msg or "unauthenticated" in msg or "access_token_type_unsupported" in msg:
         return True
-    if "403" in msg or "permission_denied" in msg or "forbidden" in msg:
+    if "403" in msg or "permission_denied" in msg:
         return True
     return False
 
@@ -611,10 +616,19 @@ class VertexAIService:
         raise GenerationError("The model did not return an image part.")
 
     CHAT_MODEL = "gemini-3.1-pro-preview"
+    SEARCH_MODEL = "gemini-3.1-flash-lite-preview"
 
-    async def chat_text(self, contents: list[Any]) -> str:
-        """Send a chat request with the same key-rotation and wait logic as image generation."""
-        model = self.CHAT_MODEL
+    async def chat_text(
+        self,
+        contents: list[Any],
+        model_override: str | None = None,
+        on_thought: Any = None,
+    ) -> str:
+        """Send a chat request with the same key-rotation and wait logic as image generation.
+
+        on_thought: optional callable(str) — called synchronously for each thinking chunk.
+        """
+        model = model_override or self.CHAT_MODEL
         deadline = time.monotonic() + 300  # 5-minute absolute deadline
 
         while time.monotonic() < deadline:
@@ -636,8 +650,9 @@ class VertexAIService:
                         model,
                     )
                     loop = asyncio.get_running_loop()
+                    import functools
                     result = await loop.run_in_executor(
-                        None, self._sync_chat, slot, contents
+                        None, functools.partial(self._sync_chat, slot, contents, model, on_thought)
                     )
                     slot.total_ok += 1
                     return result
@@ -685,10 +700,17 @@ class VertexAIService:
         logger.error("Chat: deadline reached — all slots busy for %s", model)
         raise QuotaExceededError()
 
-    def _sync_chat(self, slot: _BaseSlot, contents: list[Any]) -> str:
+    def _sync_chat(
+        self,
+        slot: _BaseSlot,
+        contents: list[Any],
+        model: str | None = None,
+        on_thought: Any = None,
+    ) -> str:
         from google.genai import types as genai_types
 
         client = slot.get_client()
+        use_model = model or self.CHAT_MODEL
 
         config = genai_types.GenerateContentConfig(
             temperature=1,
@@ -700,15 +722,26 @@ class VertexAIService:
 
         text_parts: list[str] = []
         for chunk in client.models.generate_content_stream(
-            model=self.CHAT_MODEL,
+            model=use_model,
             contents=contents,
             config=config,
         ):
             if not chunk.candidates:
                 continue
-            for part in chunk.candidates[0].content.parts:
+            content = chunk.candidates[0].content
+            if content is None:
+                continue
+            for part in (content.parts or []):
                 txt = getattr(part, "text", None)
-                if txt and not getattr(part, "thought", False):
+                if not txt:
+                    continue
+                if getattr(part, "thought", False):
+                    if on_thought is not None:
+                        try:
+                            on_thought(txt)
+                        except Exception:
+                            pass
+                else:
                     text_parts.append(txt)
 
         return "".join(text_parts) if text_parts else ""
