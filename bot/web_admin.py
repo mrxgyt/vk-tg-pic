@@ -144,6 +144,7 @@ def _layout(title: str, content: str, active: str = "") -> str:
         ("users",     "/admin/users",      "👥", "Пользователи"),
         ("payments",  "/admin/payments",   "💳", "Платежи"),
         ("apikeys",   "/admin/api-keys",   "🔑", "API ключи"),
+        ("autopub",   "/admin/autopub",    "📣", "Автопост"),
     ]
     sidebar_nav = ""
     bottom_nav = ""
@@ -301,6 +302,13 @@ def _layout(title: str, content: str, active: str = "") -> str:
     border:1px solid var(--border);color:var(--muted);font-size:.85em}}
   .page-btn:hover,.page-btn.cur{{background:rgba(167,139,250,.15);color:var(--accent);
     border-color:rgba(167,139,250,.4)}}
+
+  /* ── Form inputs (used by autopub settings, etc.) ── */
+  .form-label{{display:block;font-size:.82em;color:var(--muted);margin-bottom:5px;font-weight:500}}
+  .form-input{{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;
+    padding:9px 12px;color:var(--text);font-size:.9em;outline:none;box-sizing:border-box;
+    font-family:inherit;resize:vertical}}
+  .form-input:focus{{border-color:var(--accent);box-shadow:0 0 0 2px rgba(167,139,250,.15)}}
 
   /* ── Alert ── */
   .alert{{padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:.9em}}
@@ -1698,6 +1706,394 @@ async def api_keys_delete(request: web.Request) -> web.Response:
         return web.Response(text=json.dumps({"ok": False, "error": str(e)}), content_type="application/json", status=500)
 
 
+# ─── Autopub ─────────────────────────────────────────────────────────────────
+
+def _autopub_status_badge(status: str) -> str:
+    colors = {
+        "draft":      ("var(--muted)",   "⏳ Черновик"),
+        "approved":   ("var(--green)",   "✅ Одобрен"),
+        "publishing": ("var(--yellow)",  "📤 Публикуется"),
+        "published":  ("var(--accent2)", "📣 Опубликован"),
+        "error":      ("var(--red)",     "❌ Ошибка"),
+        "rejected":   ("var(--red)",     "🚫 Отклонён"),
+    }
+    color, label = colors.get(status, ("var(--muted)", status))
+    return f'<span style="color:{color};font-weight:600">{label}</span>'
+
+
+@_require_auth
+async def handle_autopub(request: web.Request) -> web.Response:
+    tab = request.rel_url.query.get("tab", "queue")
+    msg = request.rel_url.query.get("msg", "")
+
+    settings = _db.autopub_get_settings()
+    posts_today = _db.autopub_count_published_today()
+
+    # Queue: draft + approved posts
+    drafts    = _db.autopub_get_posts(status="draft",     limit=20)
+    approved  = _db.autopub_get_posts(status="approved",  limit=20)
+    published = _db.autopub_get_posts(status="published", limit=30)
+    errors    = _db.autopub_get_posts(status="error",     limit=10)
+
+    queue_posts = drafts + approved
+    history_posts = published + errors
+
+    # ── Alert ──
+    alert_html = ""
+    if msg == "saved":
+        alert_html = '<div class="alert alert-success">✓ Настройки сохранены</div>'
+    elif msg == "generated":
+        alert_html = '<div class="alert alert-success">✓ Пост сгенерирован и добавлен в очередь</div>'
+    elif msg == "published":
+        alert_html = '<div class="alert alert-success">✓ Пост опубликован</div>'
+    elif msg == "err":
+        alert_html = '<div class="alert alert-error">✗ Ошибка — проверьте настройки и логи</div>'
+
+    enabled_badge = (
+        '<span class="badge badge-green">🟢 Включено</span>' if settings.get("enabled")
+        else '<span class="badge badge-red">🔴 Выключено</span>'
+    )
+
+    # ── Tabs ──
+    def tab_cls(t): return "tab active" if tab == t else "tab"
+
+    # ── Settings tab ──
+    chk = lambda val: "checked" if val else ""
+    settings_html = f"""
+<form method="POST" action="/admin/api/autopub/settings">
+<div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div>
+    <label class="form-label">Telegram канал (ID или @username)</label>
+    <input name="tg_channel_id" value="{settings.get('tg_channel_id','')}" placeholder="например: -1001234567890 или @mychannel" class="form-input">
+  </div>
+  <div>
+    <label class="form-label">VK группа (ID без минуса)</label>
+    <input name="vk_group_id" value="{settings.get('vk_group_id','')}" placeholder="например: 123456789" class="form-input">
+  </div>
+  <div>
+    <label class="form-label">Постов в день</label>
+    <input name="posts_per_day" type="number" min="1" max="24" value="{settings.get('posts_per_day',3)}" class="form-input">
+  </div>
+  <div>
+    <label class="form-label">Username бота (без @)</label>
+    <input name="bot_username" value="{settings.get('bot_username','')}" placeholder="my_ai_bot" class="form-input">
+  </div>
+  <div style="grid-column:1/-1">
+    <label class="form-label">Темы / тематика (через запятую)</label>
+    <input name="topic_hints" value="{settings.get('topic_hints','')}" placeholder="домашний уют, мода, путешествия, lifestyle" class="form-input">
+  </div>
+  <div style="grid-column:1/-1">
+    <label class="form-label">Стиль изображений</label>
+    <input name="image_style" value="{settings.get('image_style','')}" placeholder="lifestyle фото 9:16, реалистичная фотография, editorial" class="form-input">
+  </div>
+  <div style="grid-column:1/-1">
+    <label class="form-label">CTA-текст поста (оставьте пустым — используется шаблон по умолчанию)</label>
+    <textarea name="post_cta" rows="3" class="form-input" placeholder="✅ Переходи в бот @mybot...">{settings.get('post_cta','')}</textarea>
+  </div>
+  <div style="grid-column:1/-1">
+    <label class="form-label">Шаблон поста (переменные: {{topic}}, {{caption_intro}}, {{prompt}}, {{bot_username}}, {{cta}})</label>
+    <textarea name="post_template" rows="4" class="form-input" placeholder="Оставьте пустым — используется шаблон по умолчанию">{settings.get('post_template','')}</textarea>
+  </div>
+  <div style="display:flex;gap:24px;align-items:center;padding:8px 0">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" name="enabled" value="1" {chk(settings.get('enabled'))} style="width:18px;height:18px;accent-color:var(--accent)">
+      <span>Автопостинг включён</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" name="auto_approve" value="1" {chk(settings.get('auto_approve'))} style="width:18px;height:18px;accent-color:var(--accent)">
+      <span>Автоодобрение постов</span>
+    </label>
+  </div>
+</div>
+<div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+  <button type="submit" class="btn btn-primary">💾 Сохранить настройки</button>
+</div>
+</form>
+<div style="margin-top:20px;padding:14px;background:rgba(167,139,250,.07);border-radius:10px;border:1px solid var(--border);font-size:.83em;color:var(--muted);line-height:1.8">
+  <b style="color:var(--text)">Как работает расписание:</b><br>
+  Посты публикуются равномерно с 09:00 до 21:00 МСК.<br>
+  При <b>{settings.get('posts_per_day',3)} постах в день</b> — интервал ~{int(720/max(1,settings.get('posts_per_day',3)))} минут.<br>
+  Без автоодобрения — посты попадают в очередь со статусом <b>Черновик</b> и ждут вашего одобрения.<br>
+  Бот генерирует изображение через Gemini, загружает черновик в лог-канал, затем публикует в нужный канал.
+</div>"""
+
+    # ── Queue tab ──
+    def _post_card(p: dict) -> str:
+        pid = p["id"]
+        status = p["status"]
+        prompt_short = (p.get("prompt") or "")[:200].replace("<", "&lt;")
+        caption_short = (p.get("caption") or "")[:300].replace("<", "&lt;")
+        topic = p.get("topic","").replace("<","&lt;")
+        dt = _msk(p.get("created_at",""))
+        fuid = p.get("tg_file_unique","")
+        img_src = f"/admin/tg-photo/{fuid}" if fuid else ""
+        img_html = (f'<img src="{img_src}" loading="lazy" style="width:100%;max-height:260px;object-fit:cover;border-radius:8px;cursor:pointer;display:block" onclick="openLightboxUrl(\'{img_src}\')">'
+                    if img_src else '<div style="width:100%;height:140px;border-radius:8px;background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;color:var(--muted)">нет фото</div>')
+        btns = ""
+        if status == "draft":
+            btns += f'<button class="btn btn-primary btn-sm" onclick="postAction({pid},\'approve\')">✅ Одобрить</button>'
+        if status in ("draft","approved"):
+            btns += f'<button class="btn btn-muted btn-sm" onclick="openEditModal({pid})" style="margin-left:6px">✏️ Редактировать</button>'
+            btns += f'<button class="btn btn-primary btn-sm" onclick="postAction({pid},\'publish\')" style="margin-left:6px;background:var(--green);border-color:var(--green)">📣 Опубликовать сейчас</button>'
+            btns += f'<button class="btn btn-danger btn-sm" onclick="postAction({pid},\'reject\')" style="margin-left:6px">🗑 Удалить</button>'
+        return f"""<div class="card" style="display:grid;grid-template-columns:200px 1fr;gap:14px;margin-bottom:14px">
+  <div>{img_html}</div>
+  <div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="font-weight:600;font-size:.95em">{topic}</span>
+      {_autopub_status_badge(status)}
+    </div>
+    <div style="font-size:.8em;color:var(--muted);margin-bottom:8px">{dt}</div>
+    <div style="font-size:.82em;color:var(--text);line-height:1.5;margin-bottom:8px;white-space:pre-wrap">{caption_short}{'…' if len(p.get('caption',''))>300 else ''}</div>
+    <details style="margin-bottom:10px">
+      <summary style="font-size:.8em;color:var(--accent);cursor:pointer">Промпт</summary>
+      <pre style="font-size:.75em;color:var(--muted);white-space:pre-wrap;margin-top:6px">{prompt_short}{'…' if len(p.get('prompt',''))>200 else ''}</pre>
+    </details>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">{btns}</div>
+  </div>
+</div>"""
+
+    if queue_posts:
+        queue_html = "".join(_post_card(p) for p in queue_posts)
+    else:
+        queue_html = '<div class="img-empty">Очередь пуста — нажмите «Сгенерировать» чтобы создать первый пост</div>'
+
+    gen_btn = f'<button class="btn btn-primary" onclick="generatePost()" style="margin-bottom:16px">⚡ Сгенерировать пост</button>'
+
+    # ── History tab ──
+    if history_posts:
+        hist_rows = ""
+        for p in history_posts:
+            pid = p["id"]
+            fuid = p.get("tg_file_unique","")
+            img_src = f"/admin/tg-photo/{fuid}" if fuid else ""
+            thumb = f'<img src="{img_src}" loading="lazy" style="width:40px;height:40px;object-fit:cover;border-radius:6px" onclick="openLightboxUrl(\'{img_src}\')" style="cursor:pointer">' if img_src else "—"
+            topic = p.get("topic","").replace("<","&lt;")[:60]
+            dt_pub = _msk(p.get("published_at","")) or _msk(p.get("created_at",""))
+            tg = f'<a href="https://t.me/c/{str(p.get("tg_msg_id",""))[0:]}" target="_blank" style="color:var(--accent2)">TG</a>' if p.get("tg_msg_id") else "—"
+            vk = f'<a href="https://vk.com/wall-{p.get("vk_post_id","")}" target="_blank" style="color:var(--accent)">VK</a>' if p.get("vk_post_id") else "—"
+            err = f'<span style="color:var(--red);font-size:.75em">{p.get("error_text","")[:60]}</span>' if p.get("error_text") else ""
+            hist_rows += f"<tr><td style='padding:6px 8px'>{thumb}</td><td style='padding:6px 4px;font-size:.84em'>{topic}</td><td style='padding:6px 8px'>{_autopub_status_badge(p['status'])}</td><td style='padding:6px 8px;white-space:nowrap;color:var(--muted);font-size:.8em'>{dt_pub}</td><td style='padding:6px 8px'>{tg}</td><td style='padding:6px 8px'>{vk}</td><td style='padding:6px 8px'>{err}<button class='btn btn-danger btn-sm' onclick='postAction({pid},\"delete\")' style='margin-left:4px'>🗑</button></td></tr>"
+        history_html = f'<div class="table-wrap"><table><thead><tr><th>Фото</th><th>Тема</th><th>Статус</th><th>Опубликован</th><th>TG</th><th>VK</th><th></th></tr></thead><tbody>{hist_rows}</tbody></table></div>'
+    else:
+        history_html = '<div class="img-empty">Нет опубликованных постов</div>'
+
+    content = f"""
+{alert_html}
+
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+  <h2 style="margin:0">📣 Автопостинг</h2>
+  {enabled_badge}
+  <span style="color:var(--muted);font-size:.85em">Сегодня опубликовано: {posts_today} / {settings.get('posts_per_day',3)}</span>
+</div>
+
+<div class="tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:20px">
+  <a href="/admin/autopub?tab=queue" class="{tab_cls('queue')}" style="padding:10px 20px;text-decoration:none;color:{'var(--text)' if tab=='queue' else 'var(--muted)'};border-bottom:{'2px solid var(--accent)' if tab=='queue' else '2px solid transparent'};font-size:.9em">⏳ Очередь ({len(queue_posts)})</a>
+  <a href="/admin/autopub?tab=settings" class="{tab_cls('settings')}" style="padding:10px 20px;text-decoration:none;color:{'var(--text)' if tab=='settings' else 'var(--muted)'};border-bottom:{'2px solid var(--accent)' if tab=='settings' else '2px solid transparent'};font-size:.9em">⚙️ Настройки</a>
+  <a href="/admin/autopub?tab=history" class="{tab_cls('history')}" style="padding:10px 20px;text-decoration:none;color:{'var(--text)' if tab=='history' else 'var(--muted)'};border-bottom:{'2px solid var(--accent)' if tab=='history' else '2px solid transparent'};font-size:.9em">📋 История ({len(history_posts)})</a>
+</div>
+
+{'<div>' + gen_btn + queue_html + '</div>' if tab == 'queue' else ''}
+{'<div>' + settings_html + '</div>' if tab == 'settings' else ''}
+{'<div>' + history_html + '</div>' if tab == 'history' else ''}
+
+<!-- Edit modal -->
+<div id="edit-modal" class="modal-overlay" style="display:none">
+  <div class="modal" style="max-width:640px;width:95vw">
+    <h3 style="margin-bottom:14px">✏️ Редактировать пост</h3>
+    <input type="hidden" id="edit-post-id">
+    <div style="margin-bottom:10px">
+      <label class="form-label">Тема</label>
+      <input id="edit-topic" class="form-input">
+    </div>
+    <div style="margin-bottom:10px">
+      <label class="form-label">Текст поста</label>
+      <textarea id="edit-caption" rows="8" class="form-input"></textarea>
+    </div>
+    <div style="margin-bottom:16px">
+      <label class="form-label">Промпт (только для справки)</label>
+      <textarea id="edit-prompt" rows="4" class="form-input"></textarea>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-muted" onclick="closeEditModal()">Отмена</button>
+      <button class="btn btn-primary" onclick="saveEdit()">💾 Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()">
+  <span class="lightbox-close" onclick="closeLightbox()">×</span>
+  <img id="lightbox-img" src="" alt="">
+</div>
+
+<script>
+var _editPosts = {json.dumps({{p['id']: p for p in queue_posts + history_posts}}, ensure_ascii=False).replace('</','<\\/') if (queue_posts or history_posts) else '{{}}'};
+
+function openLightboxUrl(src){{
+  document.getElementById('lightbox-img').src=src;
+  document.getElementById('lightbox').classList.add('open');
+}}
+function closeLightbox(){{
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lightbox-img').src='';
+}}
+document.addEventListener('keydown',function(e){{if(e.key==='Escape')closeLightbox();}});
+
+async function generatePost(){{
+  var btn=event.target; btn.disabled=true; btn.textContent='⏳ Генерирую...';
+  try{{
+    var r=await fetch('/admin/api/autopub/generate',{{method:'POST'}});
+    var d=await r.json();
+    if(d.ok) location.href='/admin/autopub?tab=queue&msg=generated';
+    else alert('Ошибка: '+(d.error||'неизвестная'));
+  }}finally{{ btn.disabled=false; btn.textContent='⚡ Сгенерировать пост'; }}
+}}
+
+async function postAction(id, action){{
+  if(action==='reject'||action==='delete'){{
+    if(!confirm('Удалить пост?')) return;
+  }}
+  var r=await fetch('/admin/api/autopub/posts/'+id+'/'+action,{{method:'POST'}});
+  var d=await r.json();
+  if(d.ok){{
+    if(action==='publish') location.href='/admin/autopub?tab=history&msg=published';
+    else location.reload();
+  }} else alert('Ошибка: '+(d.error||d));
+}}
+
+function openEditModal(id){{
+  var p=_editPosts[id];
+  if(!p) return;
+  document.getElementById('edit-post-id').value=id;
+  document.getElementById('edit-topic').value=p.topic||'';
+  document.getElementById('edit-caption').value=p.caption||'';
+  document.getElementById('edit-prompt').value=p.prompt||'';
+  document.getElementById('edit-modal').style.display='flex';
+}}
+function closeEditModal(){{ document.getElementById('edit-modal').style.display='none'; }}
+
+async function saveEdit(){{
+  var id=document.getElementById('edit-post-id').value;
+  var body={{
+    topic: document.getElementById('edit-topic').value,
+    caption: document.getElementById('edit-caption').value,
+    prompt: document.getElementById('edit-prompt').value,
+  }};
+  var r=await fetch('/admin/api/autopub/posts/'+id+'/edit',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+  var d=await r.json();
+  if(d.ok){{ closeEditModal(); location.reload(); }}
+  else alert('Ошибка: '+(d.error||d));
+}}
+</script>"""
+
+    return web.Response(text=_layout("Автопостинг", content, "autopub"), content_type="text/html")
+
+
+@_api_require_auth
+async def api_autopub_settings(request: web.Request) -> web.Response:
+    """Save autopub settings from form POST."""
+    try:
+        data = await request.post()
+        s = {
+            "enabled":       "enabled" in data,
+            "auto_approve":  "auto_approve" in data,
+            "tg_channel_id": data.get("tg_channel_id","").strip(),
+            "vk_group_id":   data.get("vk_group_id","").strip(),
+            "posts_per_day": max(1, min(24, int(data.get("posts_per_day", 3)))),
+            "topic_hints":   data.get("topic_hints","").strip(),
+            "post_template": data.get("post_template","").strip(),
+            "post_cta":      data.get("post_cta","").strip(),
+            "bot_username":  data.get("bot_username","").strip().lstrip("@"),
+            "image_style":   data.get("image_style","").strip(),
+        }
+        _db.autopub_save_settings(s)
+        raise web.HTTPFound("/admin/autopub?tab=settings&msg=saved")
+    except web.HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("api_autopub_settings error")
+        raise web.HTTPFound("/admin/autopub?tab=settings&msg=err")
+
+
+@_api_require_auth
+async def api_autopub_generate(request: web.Request) -> web.Response:
+    """Trigger immediate post generation (runs in background task)."""
+    if _vertex_service is None:
+        return web.Response(text=json.dumps({"ok": False, "error": "vertex service not ready"}),
+                            content_type="application/json", status=503)
+    try:
+        settings = _db.autopub_get_settings()
+        import asyncio
+        from bot.autopub.scheduler import _run_generate
+        asyncio.create_task(_run_generate(_vertex_service, settings))
+        return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
+    except Exception as e:
+        logger.exception("api_autopub_generate error")
+        return web.Response(text=json.dumps({"ok": False, "error": str(e)}),
+                            content_type="application/json", status=500)
+
+
+@_api_require_auth
+async def api_autopub_post_action(request: web.Request) -> web.Response:
+    """Approve / reject / delete / publish / edit a single post."""
+    try:
+        action = request.match_info["action"]
+        post_id = int(request.match_info["post_id"])
+
+        if action == "approve":
+            _db.autopub_update_post(post_id, status="approved")
+            return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
+
+        elif action in ("reject", "delete"):
+            _db.autopub_delete_post(post_id)
+            return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
+
+        elif action == "publish":
+            posts = _db.autopub_get_posts(limit=100)
+            post = next((p for p in posts if p["id"] == post_id), None)
+            if not post:
+                return web.Response(text=json.dumps({"ok": False, "error": "not found"}),
+                                    content_type="application/json", status=404)
+            settings = _db.autopub_get_settings()
+            import asyncio
+            from bot.autopub.scheduler import _run_publish as _pub
+            # Mark as approved so _run_publish picks it up
+            _db.autopub_update_post(post_id, status="approved")
+
+            async def _do_pub():
+                from bot.autopub.publisher import publish_to_telegram, publish_to_vk
+                import datetime
+                _MSK2 = datetime.timezone(datetime.timedelta(hours=3))
+                tg_channel = settings.get("tg_channel_id","").strip()
+                vk_group   = settings.get("vk_group_id","").strip()
+                tg_msg_id  = await publish_to_telegram(tg_channel, post["tg_file_id"], post["caption"]) if tg_channel else None
+                vk_post_id = await publish_to_vk(vk_group, post["tg_file_id"], post["caption"])      if vk_group   else None
+                status = "published" if (tg_msg_id or vk_post_id) else "error"
+                _db.autopub_update_post(post_id, status=status, tg_msg_id=tg_msg_id,
+                                        vk_post_id=vk_post_id,
+                                        published_at=datetime.datetime.now(_MSK2).isoformat())
+            asyncio.create_task(_do_pub())
+            return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
+
+        elif action == "edit":
+            data = await request.json()
+            fields = {}
+            if "topic"   in data: fields["topic"]   = str(data["topic"])
+            if "caption" in data: fields["caption"] = str(data["caption"])
+            if "prompt"  in data: fields["prompt"]  = str(data["prompt"])
+            if fields:
+                _db.autopub_update_post(post_id, **fields)
+            return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
+
+        return web.Response(text=json.dumps({"ok": False, "error": "unknown action"}),
+                            content_type="application/json", status=400)
+    except Exception as e:
+        logger.exception("api_autopub_post_action error")
+        return web.Response(text=json.dumps({"ok": False, "error": str(e)}),
+                            content_type="application/json", status=500)
+
+
 # ─── Register routes ─────────────────────────────────────────────────────────
 
 def register_admin_routes(app: web.Application) -> None:
@@ -1710,6 +2106,10 @@ def register_admin_routes(app: web.Application) -> None:
     app.router.add_get("/admin/users/{uid}",              handle_user_detail)
     app.router.add_get("/admin/payments",                 handle_payments)
     app.router.add_get("/admin/api-keys",                 handle_api_keys)
+    app.router.add_get("/admin/autopub",                  handle_autopub)
+    app.router.add_post("/admin/api/autopub/settings",       api_autopub_settings)
+    app.router.add_post("/admin/api/autopub/generate",       api_autopub_generate)
+    app.router.add_post("/admin/api/autopub/posts/{post_id}/{action}", api_autopub_post_action)
     app.router.add_post("/admin/api/users/{uid}/credits",    api_credits)
     app.router.add_post("/admin/api/users/{uid}/block",      api_block)
     app.router.add_post("/admin/api/users/{uid}/reset_gens", api_reset_gens)
