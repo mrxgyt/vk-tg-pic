@@ -406,11 +406,14 @@ class VertexAIService:
     def _get_next_available_slot(self, model: str) -> _BaseSlot | None:
         """Return the ready slot with the most remaining capacity for model.
 
-        'Ready' means: past cooldown_until AND has_capacity for this specific model.
+        'Ready' means: past cooldown_until AND has_capacity for this specific model
+        AND no permanent auth error.
         Flash and Pro quotas on the same key are independent — a key saturated
         with Flash requests can still serve Pro requests and vice-versa.
         """
-        ready = [s for s in self._slots if s.is_ready(model)]
+        # Permanently exclude slots with auth errors — the key is invalid until reload
+        usable = [s for s in self._slots if not s.auth_error]
+        ready = [s for s in usable if s.is_ready(model)]
         if not ready:
             return None
         # Prefer the slot with fewest requests in the window for this model
@@ -418,9 +421,11 @@ class VertexAIService:
 
     def _earliest_ready_at(self, model: str) -> float:
         """Monotonic timestamp when any slot will next be ready for model."""
-        if not self._slots:
+        # Only consider slots without permanent auth errors
+        usable = [s for s in self._slots if not s.auth_error]
+        if not usable:
             return float("inf")
-        return min(s.ready_at(model) for s in self._slots)
+        return min(s.ready_at(model) for s in usable)
 
     async def generate_image(
         self,
