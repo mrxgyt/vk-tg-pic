@@ -504,8 +504,10 @@ class VertexAIService:
                             slot.label, exc,
                         )
                     elif _is_model_error(exc):
+                        # 400 INVALID_ARGUMENT — config/model mismatch; block slot to avoid tight loop
+                        slot.cooldown_until = time.monotonic() + 300
                         logger.warning(
-                            "Slot '%s' returned 400, model issue — skipping...",
+                            "Slot '%s' returned 400 INVALID_ARGUMENT — 5min cooldown applied, rotating...",
                             slot.label,
                         )
                     elif isinstance(exc, GenerationError) and "вернула текст" in str(exc):
@@ -623,10 +625,12 @@ class VertexAIService:
         contents: list[Any],
         model_override: str | None = None,
         on_thought: Any = None,
+        use_search: bool = False,
     ) -> str:
         """Send a chat request with the same key-rotation and wait logic as image generation.
 
-        on_thought: optional callable(str) — called synchronously for each thinking chunk.
+        on_thought:  optional callable(str) — called for each thinking chunk.
+        use_search:  enable Google Search grounding (only when actually needed for trends).
         """
         model = model_override or self.CHAT_MODEL
         deadline = time.monotonic() + 300  # 5-minute absolute deadline
@@ -643,16 +647,17 @@ class VertexAIService:
                 _chat_exc: Exception | None = None
                 try:
                     logger.info(
-                        "Chat: trying '%s' [%d/%d used for %s]",
+                        "Chat: trying '%s' [%d/%d used for %s] search=%s",
                         slot.label,
                         slot.requests_in_window(model),
                         _qpm_for_model(model),
                         model,
+                        use_search,
                     )
                     loop = asyncio.get_running_loop()
                     import functools
                     result = await loop.run_in_executor(
-                        None, functools.partial(self._sync_chat, slot, contents, model, on_thought)
+                        None, functools.partial(self._sync_chat, slot, contents, model, on_thought, use_search)
                     )
                     slot.total_ok += 1
                     return result
@@ -674,8 +679,10 @@ class VertexAIService:
                             slot.label, exc,
                         )
                     elif _is_model_error(exc):
+                        # 400 INVALID_ARGUMENT — config/model mismatch; block slot to avoid tight loop
+                        slot.cooldown_until = time.monotonic() + 300
                         logger.warning(
-                            "Chat: slot '%s' returned 400, model issue — skipping",
+                            "Chat: slot '%s' returned 400 INVALID_ARGUMENT — 5min cooldown applied, rotating...",
                             slot.label,
                         )
                     else:
@@ -706,19 +713,32 @@ class VertexAIService:
         contents: list[Any],
         model: str | None = None,
         on_thought: Any = None,
+        use_search: bool = False,
     ) -> str:
         from google.genai import types as genai_types
 
         client = slot.get_client()
         use_model = model or self.CHAT_MODEL
+        m_lower = use_model.lower()
 
-        config = genai_types.GenerateContentConfig(
-            temperature=1,
-            top_p=0.95,
-            safety_settings=_get_safety_settings(),
-            thinking_config=genai_types.ThinkingConfig(thinking_budget=24576),
-            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-        )
+        config_kwargs: dict[str, Any] = {
+            "temperature": 1,
+            "top_p": 0.95,
+            "safety_settings": _get_safety_settings(),
+        }
+
+        # Thinking: only for full Flash or Pro models — NOT for Lite variants
+        # (Lite models don't support thinking_config; sending it causes 400 INVALID_ARGUMENT)
+        supports_thinking = ("flash" in m_lower and "lite" not in m_lower) or "pro" in m_lower
+        if supports_thinking:
+            config_kwargs["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=8192)
+
+        # Google Search: only when caller explicitly requests it (trend search)
+        # Enabling it unconditionally wastes quota and may cause 400 on unsupported models
+        if use_search:
+            config_kwargs["tools"] = [genai_types.Tool(google_search=genai_types.GoogleSearch())]
+
+        config = genai_types.GenerateContentConfig(**config_kwargs)
 
         text_parts: list[str] = []
         for chunk in client.models.generate_content_stream(

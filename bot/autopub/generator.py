@@ -66,7 +66,7 @@ async def search_current_trends(
     try:
         text = await vertex_service.chat_text([
             {"role": "user", "parts": [{"text": prompt_text}]}
-        ], model_override=search_model)
+        ], model_override=search_model, use_search=True)
         text = text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
