@@ -84,9 +84,11 @@ async def _run_generate(
     admin_feedback: str = "",
     chosen_trend: "dict | None" = None,
     manual: bool = False,
+    user_idea: str = "",
 ) -> None:
     from bot.autopub.generator import (
         search_current_trends,
+        search_idea_context,
         generate_post_idea,
         generate_image_for_post,
         upload_draft_to_telegram,
@@ -101,8 +103,20 @@ async def _run_generate(
 
     trend_context = ""
     source_trend = ""
+    _idea_context_text = ""
 
-    if chosen_trend:
+    if user_idea:
+        # Admin entered their own idea — search web for context, skip trend picker
+        _set_progress(1, "🔍 Изучаю вашу идею...", 5,
+                      msg=f"Идея: «{user_idea[:70]}» — ищу контекст в интернете")
+        logger.info("[autopub] шаг 1/5 — пользовательская идея: %r, ищу контекст...", user_idea[:80])
+        _idea_context_text = await search_idea_context(vertex_service, user_idea)
+        source_trend = user_idea
+        trend_context = f"{user_idea}: {_idea_context_text}"
+        _set_progress(1, "✅ Контекст найден", 18,
+                      msg=f"Идея изучена, перехожу к генерации поста")
+        logger.info("[autopub] шаг 1/5 OK — контекст по идее получен (%d символов)", len(_idea_context_text))
+    elif chosen_trend:
         # Pre-selected trend provided directly
         source_trend = chosen_trend.get("trend", "")
         trend_context = f"{chosen_trend.get('trend', '')}: {chosen_trend.get('context', '')}"
@@ -155,8 +169,10 @@ async def _run_generate(
             logger.warning("[autopub] шаг 1/5 — тренды не найдены, генерирую без тренда")
 
     # Step 2: Idea
-    _set_progress(2, "💡 Придумываю идею поста...", 22,
-                  msg="Gemini Pro генерирует тему, промпт, заголовок")
+    step2_label = "💡 Придумываю креативный пост..." if user_idea else "💡 Придумываю идею поста..."
+    _set_progress(2, step2_label, 22,
+                  msg="Gemini Pro генерирует тему, промпт, заголовок" +
+                  (" (полная творческая свобода)" if user_idea else ""))
     logger.info("[autopub] шаг 2/5 — генерирую идею поста (Pro model)...")
     idea = await generate_post_idea(
         vertex_service,
@@ -165,6 +181,8 @@ async def _run_generate(
         trend_context=trend_context,
         admin_feedback=admin_feedback,
         on_thought=_on_thought_cb,
+        user_idea=user_idea,
+        idea_context=_idea_context_text,
     )
     if not idea:
         err = "Gemini не вернул идею — проверьте логи"
@@ -179,6 +197,7 @@ async def _run_generate(
 
     topic = idea["topic"]
     prompt = idea["prompt"]
+    image_prompt = idea.get("image_prompt", prompt)
     caption_intro = idea.get("caption_intro", topic)
     gemini_caption = idea.get("caption", "")
 
@@ -192,13 +211,15 @@ async def _run_generate(
         gemini_caption=gemini_caption,
     )
     logger.info("[autopub] текст поста сформирован, длина=%d символов", len(caption))
+    if image_prompt != prompt:
+        logger.info("[autopub] image_prompt отличается от user prompt (иллюстрация vs пользовательский)")
 
-    # Step 3: Image generation
-    _set_progress(3, "🎨 Генерирую изображение 9:16...", 38,
-                  msg=f"Промпт: «{prompt[:80]}...»")
-    logger.info("[autopub] шаг 3/5 — генерирую изображение 9:16...")
+    # Step 3: Image generation (uses image_prompt for illustration, NOT user-facing prompt)
+    _set_progress(3, "🎨 Генерирую пример-иллюстрацию 4:5...", 38,
+                  msg=f"Промпт иллюстрации: «{image_prompt[:80]}...»")
+    logger.info("[autopub] шаг 3/5 — генерирую иллюстрацию 4:5...")
     img_t = time.monotonic()
-    image_bytes = await generate_image_for_post(vertex_service, prompt)
+    image_bytes = await generate_image_for_post(vertex_service, image_prompt)
     if not image_bytes:
         err = "Изображение не сгенерировано — проверьте логи"
         _set_progress(3, "❌ Ошибка генерации изображения", 38, error=err)

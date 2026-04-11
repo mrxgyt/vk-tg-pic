@@ -1989,9 +1989,33 @@ async def handle_autopub(request: web.Request) -> web.Response:
         queue_html = '<div id="queue-empty" class="img-empty">Очередь пуста — нажмите «Сгенерировать» чтобы создать первый пост</div>'
 
     gen_btn = f'''<div style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-  <button class="btn btn-primary" id="gen-btn" onclick="generatePost(this)">⚡ Сгенерировать</button>
-  <span class="gen-hint">Gemini ищет тренды → придумывает идею → генерирует фото (~60 сек)</span>
+  <button class="btn btn-primary" id="gen-btn" onclick="openModePicker(this)">⚡ Сгенерировать</button>
+  <span class="gen-hint">Задай идею или найди тренды → Gemini придумывает пост и генерирует фото (~60 сек)</span>
 </div>
+
+<!-- Mode picker panel -->
+<div id="gen-mode-picker" style="display:none;border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.07);border-radius:12px;margin-bottom:16px;padding:14px 16px;font-size:.88em">
+  <div style="font-weight:600;color:var(--text);margin-bottom:12px">Как создать пост?</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+    <div onclick="showIdeaInput()" style="cursor:pointer;border:1px solid rgba(167,139,250,.25);border-radius:10px;padding:12px 14px;transition:background .15s" onmouseover="this.style.background=\'rgba(167,139,250,.12)\'" onmouseout="this.style.background=\'transparent\'">
+      <div style="font-size:1.1em;margin-bottom:4px">💡 Задать идею</div>
+      <div style="font-size:.8em;color:var(--muted);line-height:1.4">Опиши тему словами — ИИ найдёт информацию в интернете и создаст пост</div>
+    </div>
+    <div onclick="startWithTrends()" style="cursor:pointer;border:1px solid rgba(167,139,250,.25);border-radius:10px;padding:12px 14px;transition:background .15s" onmouseover="this.style.background=\'rgba(167,139,250,.12)\'" onmouseout="this.style.background=\'transparent\'">
+      <div style="font-size:1.1em;margin-bottom:4px">📈 Искать тренды</div>
+      <div style="font-size:.8em;color:var(--muted);line-height:1.4">Gemini ищет актуальные тренды — ты выбираешь подходящий</div>
+    </div>
+  </div>
+  <div id="gen-idea-input" style="display:none;margin-top:14px;border-top:1px solid rgba(167,139,250,.15);padding-top:12px">
+    <div style="font-size:.82em;color:var(--muted);margin-bottom:6px">Опиши идею — тема, настроение, образ, что угодно:</div>
+    <textarea id="gen-idea-text" rows="3" placeholder="Например: рассветная прогулка в осеннем лесу..." style="width:100%;box-sizing:border-box;background:rgba(0,0,0,.2);border:1px solid rgba(167,139,250,.3);border-radius:8px;color:var(--text);font-size:.88em;padding:8px 10px;resize:vertical;font-family:inherit" onkeydown="if(event.ctrlKey&&event.key===\'Enter\')startWithIdea()"></textarea>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn btn-primary" style="flex:1;padding:8px 0" onclick="startWithIdea()">🚀 Поехали</button>
+      <button onclick="closeModePicker()" style="padding:8px 16px;background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.85em">Отмена</button>
+    </div>
+  </div>
+</div>
+
 <div id="gen-banner" style="display:none;border:1px solid rgba(167,139,250,.3);background:rgba(167,139,250,.07);border-radius:12px;margin-bottom:16px;padding:14px 16px;font-size:.88em">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px">
     <span id="gen-label" style="font-weight:600;color:var(--text)">⚙️ Генерация...</span>
@@ -2313,14 +2337,56 @@ async function submitTrendPick(trend){{
   }}catch(e){{ console.warn('select_trend error',e); }}
 }}
 
-async function generatePost(btn){{
-  btn.id='gen-btn';
-  btn.disabled=true; btn.textContent='⏳ Запускаю...';
+function openModePicker(btn){{
+  btn.disabled=true;
+  var picker=document.getElementById('gen-mode-picker');
+  if(picker){{ picker.style.display='block'; }}
+  var ideaInp=document.getElementById('gen-idea-input');
+  if(ideaInp){{ ideaInp.style.display='none'; }}
+  var ta=document.getElementById('gen-idea-text');
+  if(ta){{ ta.value=''; }}
+}}
+
+function closeModePicker(){{
+  var picker=document.getElementById('gen-mode-picker');
+  if(picker){{ picker.style.display='none'; }}
+  var btn=document.getElementById('gen-btn');
+  if(btn){{ btn.disabled=false; btn.textContent='⚡ Сгенерировать'; }}
+}}
+
+function showIdeaInput(){{
+  var inp=document.getElementById('gen-idea-input');
+  if(inp){{ inp.style.display='block'; }}
+  var ta=document.getElementById('gen-idea-text');
+  if(ta){{ ta.focus(); }}
+}}
+
+async function startWithIdea(){{
+  var ta=document.getElementById('gen-idea-text');
+  var idea=(ta?ta.value:'').trim();
+  if(!idea){{ if(ta) ta.focus(); return; }}
+  var picker=document.getElementById('gen-mode-picker');
+  if(picker){{ picker.style.display='none'; }}
+  await _doGenerate({{user_idea:idea}});
+}}
+
+async function startWithTrends(){{
+  var picker=document.getElementById('gen-mode-picker');
+  if(picker){{ picker.style.display='none'; }}
+  await _doGenerate({{}});
+}}
+
+async function _doGenerate(body){{
+  var btn=document.getElementById('gen-btn');
+  if(btn){{ btn.disabled=true; btn.textContent='⏳ Генерация...'; }}
   try{{
-    var r=await fetch('/admin/api/autopub/generate',{{method:'POST'}});
+    var r=await fetch('/admin/api/autopub/generate',{{
+      method:'POST',
+      headers:{{'Content-Type':'application/json'}},
+      body:JSON.stringify(body),
+    }});
     var d=await r.json();
     if(d.ok){{
-      btn.textContent='⏳ Генерация...';
       _genDone=false;
       var p=_genPanel();
       if(p){{
@@ -2335,11 +2401,11 @@ async function generatePost(btn){{
       _genConnectSSE();
     }} else {{
       alert('Ошибка: '+(d.error||'неизвестная'));
-      btn.disabled=false; btn.textContent='⚡ Сгенерировать пост';
+      if(btn){{ btn.disabled=false; btn.textContent='⚡ Сгенерировать'; }}
     }}
   }}catch(e){{
     alert('Fetch error: '+e);
-    btn.disabled=false; btn.textContent='⚡ Сгенерировать пост';
+    if(btn){{ btn.disabled=false; btn.textContent='⚡ Сгенерировать'; }}
   }}
 }}
 
@@ -2513,20 +2579,28 @@ async def api_autopub_generate(request: web.Request) -> web.Response:
                             content_type="application/json", status=503)
     try:
         chosen_trend = None
+        user_idea = ""
         try:
             body = await request.json()
             chosen_trend = body.get("chosen_trend") or None
+            user_idea = (body.get("user_idea") or "").strip()
         except Exception:
             pass
         settings = _db.autopub_get_settings()
-        logger.info("[autopub] настройки: tg_channel=%r  vk_group=%r  bot=%r  trend=%r",
+        logger.info("[autopub] настройки: tg_channel=%r  vk_group=%r  bot=%r  trend=%r  idea=%r",
                     settings.get("tg_channel_id"), settings.get("vk_group_id"),
                     settings.get("bot_username"),
-                    chosen_trend.get("trend") if chosen_trend else "random")
+                    chosen_trend.get("trend") if chosen_trend else "random",
+                    user_idea[:40] if user_idea else "")
         import asyncio
         from bot.autopub.scheduler import _run_generate
         _gen_progress_reset()
-        asyncio.create_task(_run_generate(_vertex_service, settings, chosen_trend=chosen_trend, manual=True))
+        asyncio.create_task(_run_generate(
+            _vertex_service, settings,
+            chosen_trend=chosen_trend,
+            manual=True,
+            user_idea=user_idea,
+        ))
         logger.info("[autopub] задача генерации запущена в фоне (manual=True)")
         return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
     except Exception as e:

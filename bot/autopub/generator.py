@@ -84,6 +84,35 @@ async def search_current_trends(
     return None
 
 
+async def search_idea_context(
+    vertex_service: "VertexAIService",
+    user_idea: str,
+) -> str:
+    """
+    Search the web for context around the admin's idea so Gemini can create
+    a richer, more specific post.  Returns a plain-text summary string.
+    """
+    prompt_text = (
+        f"Используй поиск в интернете и найди актуальную информацию, вдохновляющие детали "
+        f"и интересные факты по теме: «{user_idea}»\n\n"
+        "Напиши 3-5 предложений на русском языке: что сейчас популярно или интересно "
+        "в этой теме, какие детали и нюансы сделают визуальный контент более современным "
+        "и привлекательным. Без JSON — просто полезный текстовый контекст."
+    )
+    search_model = getattr(vertex_service, "SEARCH_MODEL", "gemini-3.1-flash-lite-preview")
+    logger.info("[autopub gen] поиск контекста по идее «%s» (модель=%s)...", user_idea[:60], search_model)
+    try:
+        text = await vertex_service.chat_text([
+            {"role": "user", "parts": [{"text": prompt_text}]}
+        ], model_override=search_model, use_search=True)
+        result = text.strip() if text else user_idea
+        logger.info("[autopub gen] контекст идеи получен, %d символов", len(result))
+        return result
+    except Exception as exc:
+        logger.error("[autopub gen] ошибка поиска контекста идеи: %s", exc)
+        return user_idea
+
+
 # ─── Idea generation ─────────────────────────────────────────────────────────
 
 _IDEA_PROMPT_TEMPLATE = """Ты — креативный контент-менеджер для Telegram-канала об AI-генерации изображений.
@@ -92,15 +121,74 @@ _IDEA_PROMPT_TEMPLATE = """Ты — креативный контент-мене
 Стиль изображений: {style}
 {trend_block}
 {feedback_block}
-Придумай одну идею для поста. Верни ответ строго в формате JSON (без markdown, без ```):
+Придумай одну идею для поста. ВАЖНО — в посте будет два промпта с разными задачами:
+
+1. «prompt» — промпт ДЛЯ ПОЛЬЗОВАТЕЛЕЙ. Они скопируют его и отправят в бот ВМЕСТЕ С НЕСКОЛЬКИМИ СВОИМИ ФОТО (например: фото мебели + фото комнаты, или фото лица + фото стиля).
+   ПРАВИЛА:
+   — Промпт должен быть ОБЩИМ — БЕЗ конкретики что на фото! Пользователь сам выбирает что отправить.
+   — Промпт описывает ДЕЙСТВИЕ: что сделать с фотографиями пользователя.
+   — Пиши ПРОСТЫМ языком, как человек попросил бы друга.
+   — Примеры ХОРОШИХ промптов: "Place this item into this room and show how it would look", "Turn this photo into an oil painting", "Put me in this location"
+   — Примеры ПЛОХИХ промптов: "Place a modern gray sofa into a Scandinavian living room" — НЕЛЬЗЯ! Конкретная мебель и комната придут от пользователя на фото!
+   — Короткий, ясный, универсальный.
+
+2. «image_prompt» — ВНУТРЕННИЙ промпт для генерации ПРИМЕРА-ИЛЛЮСТРАЦИИ. Пользователи НЕ увидят. Подробный, конкретный, технический. Показывает наглядный пример результата.
+
+Верни ответ строго в формате JSON (без markdown, без ```):
 {{
   "topic": "Краткое название темы (до 40 символов), например: ❤️ Домашний уют",
-  "caption": "Текст поста для публикации в Telegram и ВКонтакте. Максимум 800 символов. Начни с эмоционального заголовка, затем 3-5 предложений о теме/настроении, в конце 1-2 строки CTA. Без хэштегов, без ссылок, без упоминания промпта.",
-  "prompt": "Детальный промпт на АНГЛИЙСКОМ языке для генерации изображения. СТРОГО не более 800 символов (считай символы!). Опиши: главный объект/сцену, антураж, освещение, стиль фото (lifestyle, editorial и т.д.), соотношение сторон 4:5 (Instagram portrait). ВАЖНО: персонаж должен быть разным — иногда мужчина, иногда женщина, иногда пара, иногда группа людей, иногда вообще без людей (пейзаж, архитектура, натюрморт). Не ограничивайся только девушками!",
+  "caption": "Текст поста для публикации. Максимум 800 символов. Объясни идею, покажи как пользоваться (отправь фото того-то + фото того-то + скопируй промпт). В конце CTA. Без хэштегов, без ссылок.",
+  "prompt": "ОБЩИЙ промпт на английском (до 800 символов). УНИВЕРСАЛЬНАЯ инструкция — что сделать с фотографиями пользователя. БЕЗ конкретики что на фото — конкретику дают фотографии! Пример: 'Place this item into this room and show how it fits naturally'.",
+  "image_prompt": "Детальный технический промпт на английском (до 800 символов) для генерации конкретного примера-иллюстрации. Формат 4:5 (portrait). Конкретная сцена, освещение, стиль.",
   "caption_intro": "Короткий эмоциональный заголовок (до 60 символов)"
 }}
 
-Промпт должен быть подробным и на английском — так модель генерирует лучше."""
+prompt — общий и простой, image_prompt — конкретный и технический."""
+
+_USER_IDEA_PROMPT_TEMPLATE = """Ты — главный креативный директор Telegram/VK канала @picgenai об AI-генерации изображений.
+
+Администратор дал тебе ИДЕЮ для поста:
+«{user_idea}»
+
+Вот дополнительный контекст из интернета по этой теме:
+{idea_context}
+
+Стиль изображений канала: {style}
+
+У тебя ПОЛНАЯ ТВОРЧЕСКАЯ СВОБОДА. Твоя главная цель — создать пост, который заставит людей захотеть попробовать это самим через бота. Подумай глубоко:
+
+— Как лучше всего «продать» эту идею подписчикам?
+— Какой визуальный пример будет максимально впечатляющим — до/после, сравнение стилей, wow-эффект, неожиданный ракурс, контраст?
+— Как подать текст: вопросом, провокацией, историей, вдохновением, лайфхаком?
+— Что зацепит зрителя: эмоция, практическая польза, эстетика, удивление?
+
+КРИТИЧЕСКИ ВАЖНО — в посте будут ДВА РАЗНЫХ промпта:
+
+1. «prompt» — промпт ДЛЯ ПОЛЬЗОВАТЕЛЕЙ. Они скопируют его и отправят в бот ВМЕСТЕ С НЕСКОЛЬКИМИ ФОТО (фото мебели + фото комнаты, фото лица + фото стиля, и т.д.).
+   ПРАВИЛА:
+   — Промпт должен быть ОБЩИМ и УНИВЕРСАЛЬНЫМ — БЕЗ конкретики что на фото!
+   — Конкретику (какая мебель, какая комната, чьё лицо) определяют ФОТОГРАФИИ пользователя.
+   — Промпт описывает только ДЕЙСТВИЕ: что сделать с этими фотографиями.
+   — Простой язык, как попросил бы друга.
+   — Примеры ХОРОШИХ: "Place this item into this room and show how it looks", "Put me in this location", "Turn this photo into this style"
+   — Примеры ПЛОХИХ: "Place a gray sofa into a modern living room" — НЕЛЬЗЯ! Конкретику дают фото!
+   
+2. «image_prompt» — ВНУТРЕННИЙ промпт для генерации ПРИМЕРА-ИЛЛЮСТРАЦИИ. Пользователи НЕ увидят. Подробный, конкретный, технический. Наглядный wow-пример результата.
+
+Ограничение: текст поста (caption) — максимум 800 символов.
+
+{feedback_block}
+
+Верни ответ строго в формате JSON (без markdown, без ```):
+{{
+  "topic": "Краткое название темы (до 40 символов)",
+  "caption": "Текст поста (до 800 символов). Объясни идею и КАК пользоваться: какие фото отправить + скопировать промпт. Главное — захотеть попробовать. Без хэштегов, без ссылок.",
+  "prompt": "ОБЩИЙ промпт на английском (до 800 символов). УНИВЕРСАЛЬНАЯ инструкция что сделать с фотографиями. БЕЗ конкретики — конкретику дают фото! Пример: 'Place this item into this room and show how it fits'.",
+  "image_prompt": "Детальный технический промпт на английском (до 800 символов) для конкретного примера-иллюстрации. Формат 4:5 (portrait). Конкретная сцена, освещение, стиль.",
+  "caption_intro": "Короткий эмоциональный заголовок (до 60 символов)"
+}}
+
+prompt — общий для людей, image_prompt — конкретный для ИИ. Удиви."""
 
 
 async def generate_post_idea(
@@ -110,16 +198,13 @@ async def generate_post_idea(
     trend_context: str = "",
     admin_feedback: str = "",
     on_thought: Any | None = None,
+    user_idea: str = "",
+    idea_context: str = "",
 ) -> dict | None:
     """Ask Gemini Pro to invent a topic + prompt + caption. Returns dict or None."""
     import json
 
-    topics = topic_hints.strip() or ", ".join(random.sample(_DEFAULT_TOPICS, 4))
     style = image_style.strip() or "lifestyle, editorial, реалистичная фотография"
-
-    trend_block = ""
-    if trend_context:
-        trend_block = f"\nАктуальный тренд для поста:\n{trend_context}\nИспользуй этот тренд как основу идеи.\n"
 
     feedback_block = ""
     if admin_feedback:
@@ -129,10 +214,22 @@ async def generate_post_idea(
             f"Учти этот фидбэк и сделай пост лучше.\n"
         )
 
-    idea_prompt = _IDEA_PROMPT_TEMPLATE.format(
-        topics=topics, style=style,
-        trend_block=trend_block, feedback_block=feedback_block,
-    )
+    if user_idea:
+        idea_prompt = _USER_IDEA_PROMPT_TEMPLATE.format(
+            user_idea=user_idea,
+            idea_context=idea_context or "(нет дополнительного контекста)",
+            style=style,
+            feedback_block=feedback_block,
+        )
+    else:
+        topics = topic_hints.strip() or ", ".join(random.sample(_DEFAULT_TOPICS, 4))
+        trend_block = ""
+        if trend_context:
+            trend_block = f"\nАктуальный тренд для поста:\n{trend_context}\nИспользуй этот тренд как основу идеи.\n"
+        idea_prompt = _IDEA_PROMPT_TEMPLATE.format(
+            topics=topics, style=style,
+            trend_block=trend_block, feedback_block=feedback_block,
+        )
 
     pro_model = getattr(vertex_service, "CHAT_MODEL", "gemini-3.1-pro-preview")
     logger.info("[autopub gen] генерирую идею поста модель=%s (trend=%s feedback=%s)",
@@ -150,20 +247,25 @@ async def generate_post_idea(
         data = json.loads(text)
         if not all(k in data for k in ("topic", "prompt")):
             raise ValueError(f"Missing keys in response: {list(data.keys())}")
-        # backfill optional fields
         if "caption_intro" not in data:
             data["caption_intro"] = data.get("caption", data["topic"])[:60]
         if "caption" not in data:
             data["caption"] = data.get("caption_intro", "")
-        # cap caption at 900 chars
         data["caption"] = data["caption"][:900]
-        # cap prompt at 800 chars so it fits in TG photo caption without truncation
         original_prompt_len = len(data["prompt"])
         data["prompt"] = data["prompt"][:800]
         if original_prompt_len > 800:
-            logger.warning("[autopub gen] промт обрезан с %d до 800 символов", original_prompt_len)
-        logger.info("[autopub gen] идея OK: topic=%r  prompt_len=%d  caption_len=%d",
-                    data["topic"], len(data["prompt"]), len(data["caption"]))
+            logger.warning("[autopub gen] user prompt обрезан с %d до 800 символов", original_prompt_len)
+        if "image_prompt" in data:
+            orig_ip = len(data["image_prompt"])
+            data["image_prompt"] = data["image_prompt"][:800]
+            if orig_ip > 800:
+                logger.warning("[autopub gen] image_prompt обрезан с %d до 800 символов", orig_ip)
+        else:
+            data["image_prompt"] = data["prompt"]
+            logger.info("[autopub gen] image_prompt не найден, используем prompt")
+        logger.info("[autopub gen] идея OK: topic=%r  prompt_len=%d  image_prompt_len=%d  caption_len=%d",
+                    data["topic"], len(data["prompt"]), len(data["image_prompt"]), len(data["caption"]))
         return data
     except Exception as exc:
         logger.error("[autopub gen] ошибка генерации идеи: %s", exc)
