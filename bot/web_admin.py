@@ -1444,6 +1444,46 @@ async def handle_tg_photo(request: web.Request) -> web.Response:
         raise web.HTTPBadGateway()
 
 
+async def handle_tg_photo_by_fileid(request: web.Request) -> web.Response:
+    """Proxy a Telegram photo by file_id directly (for extra autopub photos)."""
+    file_id = request.match_info.get("file_id", "")
+    if not file_id or not _TG_TOKEN_FOR_PROXY:
+        raise web.HTTPNotFound()
+    try:
+        session = _get_photo_session()
+        gf_url = f"https://api.telegram.org/bot{_TG_TOKEN_FOR_PROXY}/getFile"
+        async with session.get(gf_url, params={"file_id": file_id},
+                               timeout=_aiohttp.ClientTimeout(total=10)) as resp:
+            gf = await resp.json()
+        if not gf.get("ok"):
+            raise web.HTTPNotFound()
+        file_path = gf["result"]["file_path"]
+        dl_url = f"https://api.telegram.org/file/bot{_TG_TOKEN_FOR_PROXY}/{file_path}"
+        async with session.get(dl_url, timeout=_aiohttp.ClientTimeout(total=30)) as dl:
+            if dl.status != 200:
+                raise web.HTTPBadGateway()
+            content_type = dl.headers.get("Content-Type", "image/jpeg")
+            stream_resp = web.StreamResponse(
+                headers={
+                    "Content-Type": content_type,
+                    "Cache-Control": "max-age=86400, immutable",
+                }
+            )
+            await stream_resp.prepare(request)
+            received = 0
+            async for chunk in dl.content.iter_chunked(65536):
+                received += len(chunk)
+                if received > _MAX_IMAGE_BYTES:
+                    break
+                await stream_resp.write(chunk)
+            return stream_resp
+    except web.HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("handle_tg_photo_by_fileid failed: %s", exc)
+        raise web.HTTPBadGateway()
+
+
 @_api_require_auth
 async def api_test_log_channel(request: web.Request) -> web.Response:
     """Send a test image to the log channel to verify configuration."""
@@ -1801,12 +1841,19 @@ def _render_post_card(p: dict) -> str:
     fuid = p.get("tg_file_unique", "")
     source_trend = p.get("source_trend", "").replace("<", "&lt;")
     admin_comment = p.get("admin_comment", "").replace("<", "&lt;")
+    extra_fids = [fid.strip() for fid in p.get("extra_file_ids", "").split(",") if fid.strip()]
     img_src = f"/admin/tg-photo/{fuid}" if fuid else ""
-    img_html = (
-        f'<img src="{img_src}" loading="lazy" style="width:100%;max-height:260px;object-fit:cover;border-radius:8px;cursor:pointer;display:block" onclick="openLightboxUrl(\'{img_src}\')">'
-        if img_src else
-        '<div style="width:100%;height:120px;border-radius:8px;background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.85em">нет фото</div>'
-    )
+    if img_src and extra_fids:
+        gallery_items = f'<img src="{img_src}" loading="lazy" style="width:100%;max-height:260px;object-fit:cover;border-radius:8px;cursor:pointer;display:block" onclick="openLightboxUrl(\'{img_src}\')">'
+        extra_thumbs = ""
+        for efid in extra_fids:
+            esrc = f"/admin/tg-photo-fid/{efid}"
+            extra_thumbs += f'<img src="{esrc}" loading="lazy" style="width:calc(50% - 3px);height:80px;object-fit:cover;border-radius:6px;cursor:pointer" onclick="openLightboxUrl(\'{esrc}\')">'
+        img_html = f'{gallery_items}<div style="display:flex;gap:6px;margin-top:6px">{extra_thumbs}</div>'
+    elif img_src:
+        img_html = f'<img src="{img_src}" loading="lazy" style="width:100%;max-height:260px;object-fit:cover;border-radius:8px;cursor:pointer;display:block" onclick="openLightboxUrl(\'{img_src}\')">'
+    else:
+        img_html = '<div style="width:100%;height:120px;border-radius:8px;background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.85em">нет фото</div>'
     trend_badge = (
         f'<div style="font-size:.75em;background:rgba(167,139,250,.12);color:var(--accent);border-radius:6px;padding:3px 8px;margin-bottom:6px;display:inline-block">🔥 {source_trend}</div><br>'
         if source_trend else ""
@@ -2792,4 +2839,5 @@ def register_admin_routes(app: web.Application) -> None:
     app.router.add_post("/admin/api/keys/add",               api_keys_add)
     app.router.add_post("/admin/api/keys/delete",            api_keys_delete)
     app.router.add_get("/admin/tg-photo/{file_unique_id}",   handle_tg_photo)
+    app.router.add_get("/admin/tg-photo-fid/{file_id}",     handle_tg_photo_by_fileid)
     logger.info("Admin panel routes registered at /admin")
