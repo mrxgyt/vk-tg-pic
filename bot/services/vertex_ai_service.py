@@ -110,7 +110,11 @@ def _is_auth_error(exc: BaseException) -> bool:
 
 
 def _is_safety_error(exc: BaseException) -> bool:
-    msg = str(exc).lower()
+    return _is_safety_error_text(str(exc))
+
+
+def _is_safety_error_text(msg: str) -> bool:
+    msg = msg.lower()
     safety_keywords = (
         "safety", "blocked", "harm", "policy", "prohibited",
         "content_filter", "safetyfiltererror", "finish_reason: safety",
@@ -305,19 +309,17 @@ class _ApiKeySlot(_BaseSlot):
             logger.info("Initialised genai client for '%s' (Vertex AI + API key mode%s)", self.label, proj_info)
         return self.client
 
-    def get_video_client(self) -> Any:
+    def get_video_base_url(self) -> str | None:
         if not self._project_id:
-            return self.get_client()
-        if self._video_client is None:
-            import google.genai as genai
-            from google.auth.api_key import Credentials as ApiKeyCredentials
-            self._video_client = genai.Client(
-                project=self._project_id,
-                location="us-central1",
-                credentials=ApiKeyCredentials(self._api_key),
-            )
-            logger.info("Initialised VIDEO client for '%s' (project=%s)", self.label, self._project_id)
-        return self._video_client
+            return None
+        return (
+            f"https://us-central1-aiplatform.googleapis.com/v1beta1/"
+            f"projects/{self._project_id}/locations/us-central1/"
+            f"publishers/google/models"
+        )
+
+    def get_video_api_key(self) -> str:
+        return self._api_key
 
 
 class _CredSlot(_BaseSlot):
@@ -873,7 +875,8 @@ class VertexAIService:
         on_progress: Any,
         image: bytes | None = None,
     ) -> bytes:
-        from google.genai import types as genai_types
+        import aiohttp
+        import base64
 
         deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
         _t0 = time.monotonic()
@@ -897,30 +900,12 @@ class VertexAIService:
 
             try:
                 if isinstance(slot, _ApiKeySlot):
-                    client = slot.get_video_client()
+                    base_url = slot.get_video_base_url()
+                    api_key = slot.get_video_api_key()
+                    if not base_url:
+                        raise GenerationError("API-ключу не назначен project_id — видео недоступно")
                 else:
-                    client = slot.get_client()
-
-                config = genai_types.GenerateVideosConfig(
-                    aspect_ratio=aspect_ratio,
-                    duration_seconds=duration_seconds,
-                    resolution=resolution,
-                    person_generation=person_generation,
-                    number_of_videos=1,
-                    enhance_prompt=True,
-                    generate_audio=generate_audio,
-                )
-
-                gen_kwargs: dict[str, Any] = {
-                    "model": model,
-                    "prompt": prompt,
-                    "config": config,
-                }
-                if image is not None:
-                    gen_kwargs["image"] = genai_types.Image(
-                        image_bytes=image,
-                        mime_type="image/jpeg",
-                    )
+                    raise GenerationError("Видео пока поддерживается только с API-ключами с project_id")
 
                 _mode = "image→video" if image else "text→video"
                 logger.info(
@@ -928,48 +913,95 @@ class VertexAIService:
                     _mode, slot.label, model, prompt[:60],
                 )
 
-                loop = asyncio.get_running_loop()
-                import functools
-                operation = await loop.run_in_executor(
-                    None,
-                    functools.partial(
-                        client.models.generate_videos,
-                        **gen_kwargs,
-                    ),
-                )
+                instances: list[dict[str, Any]] = [{"prompt": prompt}]
+                if image is not None:
+                    instances[0]["image"] = {
+                        "bytesBase64Encoded": base64.b64encode(image).decode("utf-8"),
+                        "mimeType": "image/jpeg",
+                    }
 
-                poll_count = 0
-                while not operation.done:
-                    poll_count += 1
-                    if time.monotonic() > deadline:
-                        raise GenerationError("Таймаут ожидания генерации видео")
-                    if on_progress:
-                        try:
-                            on_progress(poll_count * VIDEO_POLL_INTERVAL)
-                        except Exception:
-                            pass
-                    await asyncio.sleep(VIDEO_POLL_INTERVAL)
-                    operation = await loop.run_in_executor(
-                        None,
-                        functools.partial(client.operations.get, operation),
-                    )
+                parameters: dict[str, Any] = {
+                    "aspectRatio": aspect_ratio,
+                    "sampleCount": 1,
+                    "durationSeconds": duration_seconds,
+                    "personGeneration": person_generation,
+                    "enhancePrompt": True,
+                    "generateAudio": generate_audio,
+                    "resolution": resolution,
+                }
 
-                if not operation.result or not operation.result.generated_videos:
-                    raise GenerationError("Модель не вернула видео")
+                predict_url = f"{base_url}/{model}:predictLongRunning?key={api_key}"
+                body = {"instances": instances, "parameters": parameters}
 
-                video = operation.result.generated_videos[0].video
-                video_bytes: bytes | None = None
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        predict_url,
+                        json=body,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        resp_data = await resp.json()
+                        if resp.status != 200:
+                            err_msg = resp_data.get("error", {}).get("message", str(resp_data))
+                            err_status = resp_data.get("error", {}).get("status", "")
+                            if _is_safety_error_text(err_msg):
+                                raise SafetyFilterError(err_msg)
+                            raise GenerationError(f"Vertex AI {resp.status} {err_status}: {err_msg[:300]}")
 
-                if hasattr(video, 'video_bytes') and video.video_bytes:
-                    video_bytes = video.video_bytes
-                elif hasattr(video, 'uri') and video.uri:
-                    import aiohttp
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(video.uri, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                            if resp.status == 200:
-                                video_bytes = await resp.read()
+                    operation_name = resp_data.get("name", "")
+                    if not operation_name:
+                        raise GenerationError("Vertex AI не вернул operation name")
+
+                    poll_url = f"https://us-central1-aiplatform.googleapis.com/v1beta1/{operation_name}?key={api_key}"
+                    poll_count = 0
+
+                    while True:
+                        poll_count += 1
+                        if time.monotonic() > deadline:
+                            raise GenerationError("Таймаут ожидания генерации видео")
+                        if on_progress:
+                            try:
+                                on_progress(poll_count * VIDEO_POLL_INTERVAL)
+                            except Exception:
+                                pass
+                        await asyncio.sleep(VIDEO_POLL_INTERVAL)
+
+                        async with session.get(
+                            poll_url,
+                            timeout=aiohttp.ClientTimeout(total=30),
+                        ) as poll_resp:
+                            poll_data = await poll_resp.json()
+
+                        if poll_data.get("done"):
+                            break
+
+                    response = poll_data.get("response", {})
+                    generated_videos = response.get("generateVideoResponse", {}).get("generatedSamples", [])
+                    if not generated_videos:
+                        error_detail = poll_data.get("error", {})
+                        if error_detail:
+                            err_msg = error_detail.get("message", str(error_detail))
+                            if _is_safety_error_text(err_msg):
+                                raise SafetyFilterError(err_msg)
+                            raise GenerationError(f"Vertex AI error: {err_msg[:300]}")
+                        raise GenerationError("Модель не вернула видео")
+
+                    video_info = generated_videos[0].get("video", {})
+                    video_uri = video_info.get("uri", "")
+                    video_b64 = video_info.get("bytesBase64Encoded", "")
+
+                    video_bytes: bytes | None = None
+                    if video_b64:
+                        video_bytes = base64.b64decode(video_b64)
+                    elif video_uri:
+                        dl_url = f"{video_uri}?key={api_key}" if "key=" not in video_uri else video_uri
+                        async with session.get(
+                            dl_url,
+                            timeout=aiohttp.ClientTimeout(total=120),
+                        ) as dl_resp:
+                            if dl_resp.status == 200:
+                                video_bytes = await dl_resp.read()
                             else:
-                                raise GenerationError(f"Не удалось скачать видео: HTTP {resp.status}")
+                                raise GenerationError(f"Не удалось скачать видео: HTTP {dl_resp.status}")
 
                 if not video_bytes:
                     raise GenerationError("Видео сгенерировано, но данные недоступны")
