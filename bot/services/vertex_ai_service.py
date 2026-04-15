@@ -306,18 +306,17 @@ class _ApiKeySlot(_BaseSlot):
         return self.client
 
     def get_video_client(self) -> Any:
+        if not self._project_id:
+            return self.get_client()
         if self._video_client is None:
             import google.genai as genai
-            kwargs: dict[str, Any] = {
-                "vertexai": True,
-                "api_key": self._api_key,
-            }
-            if self._project_id:
-                kwargs["project"] = self._project_id
-                kwargs["location"] = "us-central1"
-            self._video_client = genai.Client(**kwargs)
-            proj_info = f", project={self._project_id}" if self._project_id else ""
-            logger.info("Initialised VIDEO client for '%s' (Vertex AI%s)", self.label, proj_info)
+            from google.auth.api_key import Credentials as ApiKeyCredentials
+            self._video_client = genai.Client(
+                project=self._project_id,
+                location="us-central1",
+                credentials=ApiKeyCredentials(self._api_key),
+            )
+            logger.info("Initialised VIDEO client for '%s' (project=%s)", self.label, self._project_id)
         return self._video_client
 
 
