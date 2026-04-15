@@ -311,10 +311,12 @@ class _ApiKeySlot(_BaseSlot):
         if self._video_client is None:
             import google.genai as genai
             from google.genai import types as genai_types
+            from google.auth.api_key import Credentials as ApiKeyCredentials
             self._video_client = genai.Client(
                 vertexai=True,
                 project=self._project_id,
                 location="us-central1",
+                credentials=ApiKeyCredentials(self._api_key),
                 http_options=genai_types.HttpOptions(
                     headers={"x-goog-api-key": self._api_key},
                 ),
