@@ -17,7 +17,9 @@ from bot.keyboards import (
     get_persistent_keyboard,
     get_settings_summary_keyboard,
     get_balance_keyboard,
+    get_video_panel_text,
 )
+from bot.user_settings import is_video_model as _is_video_model
 from bot.user_settings import (
     get_user_settings,
     set_last_menu,
@@ -101,8 +103,14 @@ async def cmd_menu(message: Message) -> None:
 @router.message(lambda m: m.text == BTN_SETTINGS)
 async def cmd_settings(message: Message) -> None:
     uid = message.from_user.id
+    settings = get_user_settings(uid)
+    model_id = settings.get("model", "gemini-3.1-flash-image-preview")
+    if _is_video_model(model_id):
+        text = get_video_panel_text(uid)
+    else:
+        text = "⚙️ <b>Настройки</b>\n\nВыберите параметр который хотите изменить:"
     sent = await message.answer(
-        "⚙️ <b>Настройки</b>\n\nВыберите параметр который хотите изменить:",
+        text,
         parse_mode="HTML",
         reply_markup=get_settings_summary_keyboard(uid),
     )

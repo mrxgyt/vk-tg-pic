@@ -60,10 +60,46 @@ async def _safe_edit(callback: CallbackQuery, text: str, reply_markup=None) -> N
 _SETTINGS_TEXT = "⚙️ <b>Настройки</b>\n\nВыберите параметр который хотите изменить:"
 
 
+def _video_settings_text(uid: int) -> str:
+    settings = get_user_settings(uid)
+    model_id = settings.get("model", "veo-3.1-generate-001")
+    model_info = AVAILABLE_MODELS.get(model_id, {})
+    model_label = model_info.get("label", model_id)
+    credits = model_info.get("credits", 3)
+    aspect = settings.get("video_aspect_ratio", "16:9")
+    aspect_label = VIDEO_ASPECT_RATIOS.get(aspect, aspect)
+    dur = settings.get("video_duration", 8)
+    res = settings.get("video_resolution", "720p")
+    from bot.user_settings import VIDEO_RESOLUTIONS as _VR
+    res_label = _VR.get(res, {}).get("label", res)
+    audio = settings.get("video_audio", True)
+
+    return (
+        f"⚙️ <b>Настройки — {model_label}</b>\n\n"
+        "┌─────────────────────\n"
+        f"│ 📐 Формат: <b>{aspect_label}</b>\n"
+        f"│ ⏱ Длительность: <b>{dur} сек</b>\n"
+        f"│ 📺 Разрешение: <b>{res_label}</b>\n"
+        f"│ 🔊 Аудио: <b>{'Вкл' if audio else 'Выкл'}</b>\n"
+        "├─────────────────────\n"
+        f"│ 💰 Стоимость: <b>{credits} кр.</b> • 24 FPS • MP4\n"
+        "└─────────────────────\n\n"
+        "Нажмите на параметр чтобы изменить:"
+    )
+
+
+def _get_settings_text(uid: int) -> str:
+    settings = get_user_settings(uid)
+    model_id = settings.get("model", "gemini-3.1-flash-image-preview")
+    if is_video_model(model_id):
+        return _video_settings_text(uid)
+    return _SETTINGS_TEXT
+
+
 @router.callback_query(lambda c: c.data == "back_to_settings")
 async def back_to_settings(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
-    await _safe_edit(callback, _SETTINGS_TEXT, reply_markup=get_settings_summary_keyboard(uid))
+    await _safe_edit(callback, _get_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
     await callback.answer()
 
 
@@ -96,14 +132,7 @@ async def set_model(callback: CallbackQuery) -> None:
     info = AVAILABLE_MODELS[model_id]
     await callback.answer(f"Модель: {info['label']}")
 
-    if is_video_model(model_id):
-        await _safe_edit(
-            callback,
-            get_video_panel_text(uid),
-            reply_markup=get_video_panel_keyboard(uid),
-        )
-    else:
-        await _safe_edit(callback, _SETTINGS_TEXT, reply_markup=get_settings_summary_keyboard(uid))
+    await _safe_edit(callback, _get_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
 
 
 @router.callback_query(lambda c: c.data == "choose_aspect")
@@ -324,7 +353,7 @@ async def vp_set_aspect(callback: CallbackQuery) -> None:
     settings["video_aspect_ratio"] = key
     save_user_settings(uid)
     await callback.answer(f"Формат: {VIDEO_ASPECT_RATIOS[key]}")
-    await _safe_edit(callback, get_video_panel_text(uid), reply_markup=get_video_panel_keyboard(uid))
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("vp_dur_"))
@@ -342,7 +371,7 @@ async def vp_set_duration(callback: CallbackQuery) -> None:
     settings["video_duration"] = dur
     save_user_settings(uid)
     await callback.answer(f"Длительность: {dur} сек")
-    await _safe_edit(callback, get_video_panel_text(uid), reply_markup=get_video_panel_keyboard(uid))
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("vp_res_"))
@@ -356,7 +385,7 @@ async def vp_set_resolution(callback: CallbackQuery) -> None:
     settings["video_resolution"] = res_id
     save_user_settings(uid)
     await callback.answer(f"Разрешение: {res_id}")
-    await _safe_edit(callback, get_video_panel_text(uid), reply_markup=get_video_panel_keyboard(uid))
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
 
 
 @router.callback_query(lambda c: c.data == "vp_audio")
@@ -368,7 +397,7 @@ async def vp_toggle_audio(callback: CallbackQuery) -> None:
     save_user_settings(uid)
     state = "Вкл" if not current else "Выкл"
     await callback.answer(f"Аудио: {state}")
-    await _safe_edit(callback, get_video_panel_text(uid), reply_markup=get_video_panel_keyboard(uid))
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
 
 
 @router.callback_query(lambda c: c.data == "choose_video_resolution")

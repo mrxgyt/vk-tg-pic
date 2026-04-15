@@ -311,17 +311,32 @@ def get_settings_summary_keyboard(user_id: int) -> InlineKeyboardMarkup:
     ]
 
     if is_video_model(current_model):
-        credits = AVAILABLE_MODELS.get(current_model, {}).get("credits", 3)
+        aspect = settings.get("video_aspect_ratio", "16:9")
         dur = settings.get("video_duration", 8)
-        vres = settings.get("video_resolution", "720p")
+        res = settings.get("video_resolution", "720p")
         audio = settings.get("video_audio", True)
-        audio_icon = "🔊" if audio else "🔇"
-        rows.append([
-            InlineKeyboardButton(
-                text=f"🎬 Видео: {dur}с • {vres} • {audio_icon} ({credits} кр.)",
-                callback_data="open_video_panel",
-            ),
-        ])
+
+        aspect_row: list[InlineKeyboardButton] = []
+        for key, label in VIDEO_ASPECT_RATIOS.items():
+            text = f"✅ {label}" if key == aspect else label
+            aspect_row.append(InlineKeyboardButton(text=text, callback_data=f"vp_aspect_{key}"))
+        rows.append(aspect_row)
+
+        dur_row: list[InlineKeyboardButton] = []
+        for d in VIDEO_DURATIONS:
+            text = f"✅ {d}с" if d == dur else f"{d}с"
+            dur_row.append(InlineKeyboardButton(text=text, callback_data=f"vp_dur_{d}"))
+        rows.append(dur_row)
+
+        res_row: list[InlineKeyboardButton] = []
+        for r in VIDEO_RESOLUTIONS:
+            r_label = r.upper() if r == "720p" else r
+            text = f"✅ {r_label}" if r == res else r_label
+            res_row.append(InlineKeyboardButton(text=text, callback_data=f"vp_res_{r}"))
+        rows.append(res_row)
+
+        audio_text = "✅ 🔊 Аудио вкл" if audio else "🔇 Аудио выкл"
+        rows.append([InlineKeyboardButton(text=audio_text, callback_data="vp_audio")])
     else:
         aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
         rows.append([

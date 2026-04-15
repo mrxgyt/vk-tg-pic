@@ -264,11 +264,37 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             keyboard=get_persistent_keyboard(),
         )
 
+    def _vk_get_settings_text(user_id: int) -> str:
+        from bot.user_settings import VIDEO_RESOLUTIONS as _VR, VIDEO_ASPECT_RATIOS as _VA
+        s = get_user_settings(user_id)
+        mid = s.get("model", "gemini-3.1-flash-image-preview")
+        if not is_video_model(mid):
+            return "⚙️ Настройки\n\nВыберите что изменить:"
+        mi = AVAILABLE_MODELS.get(mid, {})
+        ml = mi.get("label", mid)
+        cr = mi.get("credits", 3)
+        al = _VA.get(s.get("video_aspect_ratio", "16:9"), "16:9")
+        d = s.get("video_duration", 8)
+        rl = _VR.get(s.get("video_resolution", "720p"), {}).get("label", s.get("video_resolution", "720p"))
+        au = s.get("video_audio", True)
+        return (
+            f"⚙️ Настройки — {ml}\n\n"
+            "┌─────────────────────\n"
+            f"│ 📐 Формат: {al}\n"
+            f"│ ⏱ Длительность: {d} сек\n"
+            f"│ 📺 Разрешение: {rl}\n"
+            f"│ 🔊 Аудио: {'Вкл' if au else 'Выкл'}\n"
+            "├─────────────────────\n"
+            f"│ 💰 Стоимость: {cr} кр. • 24 FPS • MP4\n"
+            "└─────────────────────\n\n"
+            "Нажмите на параметр чтобы изменить:"
+        )
+
     @bot.on.message(text=list(SETTINGS_TEXTS))
     async def cmd_settings(message: Message):
         uid = message.from_id
         await message.answer(
-            "⚙️ Настройки\n\nВыберите что изменить:",
+            _vk_get_settings_text(uid),
             keyboard=get_settings_keyboard(uid),
         )
 
@@ -377,7 +403,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             await _vk_safe_edit(bot.api, **kwargs)
 
         if cmd == "back_settings":
-            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "choose_model":
             from vk_bot.keyboards import get_model_keyboard
@@ -392,11 +418,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 settings = get_user_settings(uid)
                 settings["model"] = model_id
                 save_user_settings(uid)
-            if is_video_model(model_id):
-                from vk_bot.keyboards import get_video_panel_text, get_video_panel_keyboard
-                await edit_msg(get_video_panel_text(uid), get_video_panel_keyboard(uid))
-            else:
-                await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "choose_aspect":
             from vk_bot.keyboards import get_aspect_ratio_keyboard
@@ -464,45 +486,40 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             pass
 
         elif cmd == "open_video_panel":
-            from vk_bot.keyboards import get_video_panel_text, get_video_panel_keyboard
-            await edit_msg(get_video_panel_text(uid), get_video_panel_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "vp_aspect":
             from bot.user_settings import VIDEO_ASPECT_RATIOS
-            from vk_bot.keyboards import get_video_panel_text, get_video_panel_keyboard
             key = data.get("id", "16:9")
             if key in VIDEO_ASPECT_RATIOS:
                 settings = get_user_settings(uid)
                 settings["video_aspect_ratio"] = key
                 save_user_settings(uid)
-            await edit_msg(get_video_panel_text(uid), get_video_panel_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "vp_dur":
             from bot.user_settings import VIDEO_DURATIONS
-            from vk_bot.keyboards import get_video_panel_text, get_video_panel_keyboard
             dur = data.get("id", 8)
             if dur in VIDEO_DURATIONS:
                 settings = get_user_settings(uid)
                 settings["video_duration"] = dur
                 save_user_settings(uid)
-            await edit_msg(get_video_panel_text(uid), get_video_panel_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "vp_res":
             from bot.user_settings import VIDEO_RESOLUTIONS
-            from vk_bot.keyboards import get_video_panel_text, get_video_panel_keyboard
             res = data.get("id", "720p")
             if res in VIDEO_RESOLUTIONS:
                 settings = get_user_settings(uid)
                 settings["video_resolution"] = res
                 save_user_settings(uid)
-            await edit_msg(get_video_panel_text(uid), get_video_panel_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "vp_audio":
-            from vk_bot.keyboards import get_video_panel_text, get_video_panel_keyboard
             settings = get_user_settings(uid)
             settings["video_audio"] = not settings.get("video_audio", True)
             save_user_settings(uid)
-            await edit_msg(get_video_panel_text(uid), get_video_panel_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "choose_video_duration":
             from vk_bot.keyboards import get_video_duration_keyboard
