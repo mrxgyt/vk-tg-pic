@@ -334,19 +334,25 @@ async def _run_publish(settings: dict) -> None:
             errors.append("TG publish failed")
 
     if vk_group:
-        logger.info("[autopub] → VK: публикую %d фото в группу %s...", total_photos, vk_group)
-        vk_caption = build_vk_post_text(
-            topic=post.get("topic", ""),
-            caption_intro=post.get("topic", ""),
-            prompt=post.get("prompt", ""),
-            vk_community="picgenai",
-        )
-        vk_post_id = await publish_to_vk(vk_group, post["tg_file_id"], vk_caption, extra_file_ids=extra_ids or None)
-        if vk_post_id:
-            logger.info("[autopub] → VK OK: post_id=%s", vk_post_id)
+        from bot.autopub.publisher import is_vk_blocked
+        blocked, reason = is_vk_blocked()
+        if blocked:
+            logger.warning("[autopub] → VK пропущен: %s", reason)
+            errors.append(f"VK skipped: {reason}")
         else:
-            logger.error("[autopub] → VK FAILED (см. ошибки publisher выше)")
-            errors.append("VK publish failed")
+            logger.info("[autopub] → VK: публикую %d фото в группу %s...", total_photos, vk_group)
+            vk_caption = build_vk_post_text(
+                topic=post.get("topic", ""),
+                caption_intro=post.get("topic", ""),
+                prompt=post.get("prompt", ""),
+                vk_community="picgenai",
+            )
+            vk_post_id = await publish_to_vk(vk_group, post["tg_file_id"], vk_caption, extra_file_ids=extra_ids or None)
+            if vk_post_id:
+                logger.info("[autopub] → VK OK: post_id=%s", vk_post_id)
+            else:
+                logger.error("[autopub] → VK FAILED (см. ошибки publisher выше)")
+                errors.append("VK publish failed")
 
     now_iso = datetime.datetime.now(_MSK).isoformat()
     if tg_msg_id or vk_post_id:

@@ -78,6 +78,11 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 - Templates fallback: if web/templates/ files missing, built-in HTML strings used
 - FreeKassa notification URL: https://vk-tg-picgenai.ru/api/freekassa/notification
 
+## Error Handling & Resilience
+- **VK block caching**: VK API errors 5/8/27 trigger a 10-minute cooldown (`VK_BLOCK_COOLDOWN=600`). During cooldown, VK publishing is skipped entirely (no repeated failing API calls). Block status checked at scheduler level and inside photo upload loop for immediate abort.
+- **503 vs 429 separation**: Google API 503 (Service Unavailable) gets a short 15s cooldown vs 60s for 429 (rate limit). This allows faster recovery from temporary server issues.
+- **API key history**: Each key slot tracks last 200 requests with status, duration, error details. Viewable in admin panel.
+
 ## Dependencies
 Managed via `requirements.txt` with pip. Key packages:
 - aiogram>=3.15, vkbottle>=4.8, google-genai>=1.9

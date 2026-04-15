@@ -17,12 +17,13 @@ logger = logging.getLogger(__name__)
 
 _TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 _VK_TOKEN = os.getenv("VK_BOT_TOKEN", "")
-# For wall posting VK requires a USER token (not community/group token).
-# Generate at: https://vkhost.github.io/ or via VK OAuth with scope: wall,photos,offline
-# Then add it as env secret VK_USER_TOKEN.
 _VK_USER_TOKEN = os.getenv("VK_USER_TOKEN", "")
 
 _TG_CAPTION_LIMIT = 1024
+
+_vk_blocked_until: float = 0.0
+_vk_block_reason: str = ""
+VK_BLOCK_COOLDOWN = 600
 
 
 def _strip_html(text: str) -> str:
@@ -169,8 +170,21 @@ async def publish_to_telegram(
         return None
 
 
+def _vk_mark_blocked(reason: str) -> None:
+    global _vk_blocked_until, _vk_block_reason
+    _vk_blocked_until = time.monotonic() + VK_BLOCK_COOLDOWN
+    _vk_block_reason = reason
+    logger.warning("[autopub VK] заблокировано на %d мин: %s", VK_BLOCK_COOLDOWN // 60, reason)
+
+
+def is_vk_blocked() -> tuple[bool, str]:
+    if _vk_blocked_until and time.monotonic() < _vk_blocked_until:
+        remaining = int(_vk_blocked_until - time.monotonic())
+        return True, f"{_vk_block_reason} (повтор через {remaining}s)"
+    return False, ""
+
+
 def _vk_active_token() -> str:
-    """Return the best available VK token: user token preferred over group token."""
     return _VK_USER_TOKEN or _VK_TOKEN
 
 
@@ -206,8 +220,16 @@ async def _vk_get_wall_upload_url(group_id: str) -> str | None:
             logger.error("[autopub VK] код ошибки=%s  сообщение=%s", code, msg)
             if code == 5:
                 logger.error("[autopub VK] → токен недействителен или истёк")
+                _vk_mark_blocked("Токен VK недействителен (error 5)")
+            elif code == 8:
+                logger.error("[autopub VK] → приложение заблокировано VK (error 8). "
+                             "Разблокируйте в настройках VK: Управление → Настройки → API")
+                _vk_mark_blocked("Приложение VK заблокировано (error 8)")
             elif code == 15:
                 logger.error("[autopub VK] → нет прав: включите 'Фотографии' в настройках токена")
+            elif code == 27:
+                logger.error("[autopub VK] → приложение выключено (error 27)")
+                _vk_mark_blocked("Приложение VK выключено (error 27)")
     except Exception as exc:
         logger.error("[autopub VK] исключение getWallUploadServer: %s", exc)
     return None
@@ -276,6 +298,8 @@ async def _vk_wall_post(group_id: str, message: str, attachment: str = "") -> in
             code = body["error"].get("error_code")
             msg  = body["error"].get("error_msg", "")
             logger.error("[autopub VK] код=%s  сообщение=%s", code, msg)
+            if code in (5, 8, 27):
+                _vk_mark_blocked(f"VK API error {code}: {msg}")
     except Exception as exc:
         logger.error("[autopub VK] wall.post exception: %s", exc)
     return None
@@ -416,6 +440,11 @@ async def publish_to_vk(
         logger.error("[autopub VK] group_id пустой — публикация невозможна")
         return None
 
+    blocked, reason = is_vk_blocked()
+    if blocked:
+        logger.warning("[autopub VK] пропуск публикации: %s", reason)
+        return None
+
     vk_text = _strip_html(caption)
     gid = group_id.lstrip("-")
     peer_id = f"-{gid}"
@@ -443,6 +472,10 @@ async def publish_to_vk(
     logger.info("[autopub VK] 2/3 загружаю %d фото на VK wall...", len(all_jpg))
     attachments: list[str] = []
     for i, jpg in enumerate(all_jpg):
+        blocked, reason = is_vk_blocked()
+        if blocked:
+            logger.warning("[autopub VK] 2/3 прерываю загрузку: %s", reason)
+            break
         try:
             upload_url = await _vk_get_wall_upload_url(gid)
             if not upload_url:

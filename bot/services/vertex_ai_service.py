@@ -67,14 +67,18 @@ def _qpm_for_model(model: str) -> int:
 SA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "service_accounts"
 
 
+def _is_server_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("503", "500", "server error", "internal", "temporarily unavailable", "unavailable"))
+
+
 def _is_retryable(exc: BaseException) -> bool:
     msg = str(exc).lower()
     retryable_keywords = (
         "429", "quota", "resource exhausted", "rate limit",
-        "too many requests", "server error", "503", "500",
-        "internal", "temporarily unavailable",
+        "too many requests",
     )
-    return any(kw in msg for kw in retryable_keywords)
+    return any(kw in msg for kw in retryable_keywords) or _is_server_error(exc)
 
 
 def _is_model_error(exc: BaseException) -> bool:
@@ -597,6 +601,20 @@ class VertexAIService:
                             duration_ms=_dur,
                         )
                         _exc_to_raise = SafetyFilterError(str(exc))
+                    elif _is_server_error(exc) and not any(
+                        kw in str(exc).lower() for kw in ("429", "quota", "resource exhausted", "rate limit")
+                    ):
+                        cooldown_sec = 15
+                        slot.record_history(
+                            user_id=user_id, username=username, prompt=prompt,
+                            model=model, status="server_error", error=str(exc)[:200],
+                            duration_ms=_dur,
+                        )
+                        slot.cooldown_until = time.monotonic() + cooldown_sec
+                        logger.warning(
+                            "Slot '%s' returned 5xx server error — %ds cooldown, rotating...",
+                            slot.label, cooldown_sec,
+                        )
                     elif _is_retryable(exc):
                         slot.record_history(
                             user_id=user_id, username=username, prompt=prompt,
@@ -803,7 +821,15 @@ class VertexAIService:
                 except Exception as exc:
                     slot.total_err += 1
                     logger.error("Chat: slot '%s' error: %s", slot.label, repr(exc))
-                    if _is_retryable(exc):
+                    if _is_server_error(exc) and not any(
+                        kw in str(exc).lower() for kw in ("429", "quota", "resource exhausted", "rate limit")
+                    ):
+                        slot.cooldown_until = time.monotonic() + 15
+                        logger.warning(
+                            "Chat: slot '%s' returned 5xx server error — 15s cooldown, rotating...",
+                            slot.label,
+                        )
+                    elif _is_retryable(exc):
                         slot.mark_rate_limited()
                         logger.warning(
                             "Chat: slot '%s' returned 429 — 60s cooldown, rotating...",
