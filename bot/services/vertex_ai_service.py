@@ -310,13 +310,14 @@ class _ApiKeySlot(_BaseSlot):
             return self.get_client()
         if self._video_client is None:
             import google.genai as genai
-            from google.auth import api_key as api_key_module
-            creds = api_key_module.Credentials(self._api_key)
+            from google.genai import types as genai_types
             self._video_client = genai.Client(
                 vertexai=True,
                 project=self._project_id,
                 location="us-central1",
-                credentials=creds,
+                http_options=genai_types.HttpOptions(
+                    headers={"x-goog-api-key": self._api_key},
+                ),
             )
             logger.info("Initialised VIDEO client for '%s' (project=%s)", self.label, self._project_id)
         return self._video_client
