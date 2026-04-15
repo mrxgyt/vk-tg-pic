@@ -891,15 +891,18 @@ class VertexAIService:
                 else:
                     client = slot.get_client()
 
-                config = genai_types.GenerateVideosConfig(
+                is_gemini_api = isinstance(slot, _ApiKeySlot)
+                cfg_kwargs: dict[str, Any] = dict(
                     aspect_ratio=aspect_ratio,
                     duration_seconds=duration_seconds,
                     resolution=resolution,
                     person_generation=person_generation,
                     number_of_videos=1,
-                    enhance_prompt=True,
-                    generate_audio=generate_audio,
                 )
+                if not is_gemini_api:
+                    cfg_kwargs["enhance_prompt"] = True
+                    cfg_kwargs["generate_audio"] = generate_audio
+                config = genai_types.GenerateVideosConfig(**cfg_kwargs)
 
                 gen_kwargs: dict[str, Any] = {
                     "model": model,
