@@ -70,9 +70,14 @@ def init_tables() -> None:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_api_keys (
                     id  SERIAL PRIMARY KEY,
-                    key TEXT UNIQUE NOT NULL
+                    key TEXT UNIQUE NOT NULL,
+                    project_id TEXT
                 )
             """)
+            try:
+                cur.execute("ALTER TABLE bot_api_keys ADD COLUMN IF NOT EXISTS project_id TEXT")
+            except Exception:
+                pass
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS bot_payments (
                     order_id    TEXT PRIMARY KEY,
@@ -240,30 +245,32 @@ def save_one_user(user_id: int, data: dict[str, Any]) -> None:
 
 # ── API keys ───────────────────────────────────────────────────────────────────
 
-def load_api_keys() -> list[str]:
+def load_api_keys() -> list[dict]:
     if not _DATABASE_URL:
         return []
     try:
         conn = _get_conn()
         with conn.cursor() as cur:
-            cur.execute("SELECT key FROM bot_api_keys ORDER BY id")
-            return [row[0] for row in cur.fetchall()]
+            cur.execute("SELECT key, project_id FROM bot_api_keys ORDER BY id")
+            return [{"key": row[0], "project_id": row[1]} for row in cur.fetchall()]
     except Exception:
         logger.exception("db: failed to load api keys")
         return []
 
 
-def save_api_keys(keys: list[str]) -> None:
+def save_api_keys(keys: list[dict]) -> None:
     if not _DATABASE_URL:
         return
     try:
         conn = _get_conn()
         with conn.cursor() as cur:
             cur.execute("DELETE FROM bot_api_keys")
-            for key in keys:
+            for entry in keys:
+                if isinstance(entry, str):
+                    entry = {"key": entry, "project_id": None}
                 cur.execute(
-                    "INSERT INTO bot_api_keys (key) VALUES (%s) ON CONFLICT DO NOTHING",
-                    (key,)
+                    "INSERT INTO bot_api_keys (key, project_id) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET project_id = EXCLUDED.project_id",
+                    (entry["key"], entry.get("project_id"))
                 )
         logger.info("db: saved %d api keys to PostgreSQL", len(keys))
     except Exception:

@@ -280,22 +280,32 @@ class _BaseSlot:
 class _ApiKeySlot(_BaseSlot):
     """Slot that authenticates via a Google API key with Vertex AI backend."""
 
-    def __init__(self, api_key: str, index: int) -> None:
+    def __init__(self, api_key: str, index: int, project_id: str | None = None) -> None:
         super().__init__(index)
         self._api_key = api_key
+        self._project_id = project_id
 
     @property
     def label(self) -> str:
         return f"api_key_{self.index + 1}"
 
+    @property
+    def has_project(self) -> bool:
+        return bool(self._project_id)
+
     def get_client(self) -> Any:
         if self.client is None:
             import google.genai as genai
-            self.client = genai.Client(
-                vertexai=True,
-                api_key=self._api_key,
-            )
-            logger.info("Initialised genai client for '%s' (Vertex AI + API key mode)", self.label)
+            kwargs: dict[str, Any] = {
+                "vertexai": True,
+                "api_key": self._api_key,
+            }
+            if self._project_id:
+                kwargs["project"] = self._project_id
+                kwargs["location"] = "us-central1"
+            self.client = genai.Client(**kwargs)
+            proj_info = f", project={self._project_id}" if self._project_id else ""
+            logger.info("Initialised genai client for '%s' (Vertex AI + API key mode%s)", self.label, proj_info)
         return self.client
 
 
@@ -353,14 +363,13 @@ class VertexAIService:
 
         slots: list[_BaseSlot] = []
 
-        # --- Priority 1: API keys (migrate env vars into store, then load all) ---
         from bot.api_keys_store import get_all_keys, migrate_env_keys
         migrate_env_keys()
-        api_keys = get_all_keys()
-        for i, key in enumerate(api_keys):
-            slots.append(_ApiKeySlot(api_key=key, index=i))
-        if api_keys:
-            logger.info("Loaded %d API key(s) for authentication", len(api_keys))
+        api_entries = get_all_keys()
+        for i, entry in enumerate(api_entries):
+            slots.append(_ApiKeySlot(api_key=entry["key"], index=i, project_id=entry.get("project_id")))
+        if api_entries:
+            logger.info("Loaded %d API key(s) for authentication", len(api_entries))
 
         # --- Priority 2: Service account JSON files (fallback) ---
         if not slots:
@@ -385,9 +394,9 @@ class VertexAIService:
     def reload_keys(self, settings: Settings | None = None) -> None:
         from bot.api_keys_store import get_all_keys
         slots: list[_BaseSlot] = []
-        api_keys = get_all_keys()
-        for i, key in enumerate(api_keys):
-            slots.append(_ApiKeySlot(api_key=key, index=i))
+        api_entries = get_all_keys()
+        for i, entry in enumerate(api_entries):
+            slots.append(_ApiKeySlot(api_key=entry["key"], index=i, project_id=entry.get("project_id")))
         if not slots:
             sa_files = _load_sa_files()
             for i, f in enumerate(sa_files):
@@ -437,11 +446,15 @@ class VertexAIService:
             last_used_ago = int(now - slot.last_used_at) if slot.last_used_at > 0 else None
             key_masked = api_keys_store.mask_key(slot._api_key) if isinstance(slot, _ApiKeySlot) else None
             sa_name = slot.sa_path.stem if isinstance(slot, _CredSlot) else None
+            has_project = slot.has_project if isinstance(slot, _ApiKeySlot) else True
+            project_id = slot._project_id if isinstance(slot, _ApiKeySlot) else (slot._project_id if isinstance(slot, _CredSlot) else None)
             result.append({
                 "label": slot.label,
                 "key_masked": key_masked,
                 "sa_name": sa_name,
                 "type": "api_key" if isinstance(slot, _ApiKeySlot) else "service_account",
+                "has_project": has_project,
+                "project_id": project_id,
                 "status": status,
                 "cooldown_remaining": int(remaining),
                 "auth_error_msg": slot.auth_error_msg,

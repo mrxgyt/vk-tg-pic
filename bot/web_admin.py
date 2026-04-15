@@ -1552,25 +1552,34 @@ async def handle_api_keys(request: web.Request) -> web.Response:
         msg_html = '<div class="alert alert-error">⚠️ Такой ключ уже есть.</div>'
     elif msg == "deleted":
         msg_html = '<div class="alert alert-success">🗑 Ключ удалён. Перезапустите сервис для применения.</div>'
+    elif msg == "updated":
+        msg_html = '<div class="alert alert-success">✅ Ключ обновлён. Изменения применены.</div>'
     elif msg == "empty":
         msg_html = '<div class="alert alert-error">⚠️ Введите непустой ключ.</div>'
 
-    # Build static rows — JS will fill in live status cells
     key_rows = ""
-    for i, key in enumerate(stored_keys):
-        masked = _key_store.mask_key(key)
+    for i, entry in enumerate(stored_keys):
+        if isinstance(entry, str):
+            masked = _key_store.mask_key(entry)
+            proj = ""
+        else:
+            masked = _key_store.mask_key(entry["key"])
+            proj = entry.get("project_id") or ""
+        proj_badge = f'<span class="badge badge-green" style="font-size:.75em">📂 {proj}</span>' if proj else '<span class="badge badge-yellow" style="font-size:.75em;opacity:.6">нет проекта</span>'
         key_rows += f"""<tr id="key-row-{i}">
   <td style="font-weight:600;color:var(--muted);width:36px">{i+1}</td>
-  <td><code style="font-size:.88em;color:var(--accent)">{masked}</code></td>
+  <td><code style="font-size:.88em;color:var(--accent)">{masked}</code><br>{proj_badge}</td>
   <td id="st-{i}"><span class="badge badge-yellow" style="opacity:.5">…</span></td>
   <td id="act-{i}" style="font-size:.82em;color:var(--muted)">—</td>
   <td id="load-{i}" style="font-size:.82em;color:var(--muted)">—</td>
   <td id="stat-{i}" style="font-size:.82em;color:var(--muted)">—</td>
   <td style="white-space:nowrap">
     <button class="btn btn-sm" style="background:rgba(139,92,246,.12);color:var(--accent);border:1px solid rgba(139,92,246,.2);margin-right:4px"
-      onclick="showHistory({i})">📋 История</button>
+      onclick="showEdit({i},'{masked}','{proj}')">✏️</button>
+    <button class="btn btn-sm" style="background:rgba(139,92,246,.12);color:var(--accent);border:1px solid rgba(139,92,246,.2);margin-right:4px"
+      onclick="showHistory({i})">📋</button>
     <button class="btn btn-sm" style="background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.2)"
-      onclick="deleteKey({i})">🗑 Удалить</button>
+      onclick="deleteKey({i})">🗑</button>
   </td>
 </tr>
 """
@@ -1612,16 +1621,24 @@ async def handle_api_keys(request: web.Request) -> web.Response:
 </table>
 </div>
 
-<div class="card" style="max-width:520px">
+<div class="card" style="max-width:600px">
   <h3 style="margin-bottom:14px;font-size:1em;color:var(--text)">➕ Добавить Google API ключ</h3>
-  <div style="display:flex;gap:10px;flex-wrap:wrap">
-    <input type="text" id="new-key-input" placeholder="AIza..." autocomplete="off"
-      style="flex:1;min-width:200px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);
-             border-radius:8px;color:var(--text);font-size:.9em;outline:none">
-    <button class="btn btn-primary" onclick="addKey()" style="white-space:nowrap">Добавить ключ</button>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <input type="text" id="new-key-input" placeholder="AIza..." autocomplete="off"
+        style="flex:1;min-width:200px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);
+               border-radius:8px;color:var(--text);font-size:.9em;outline:none">
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <input type="text" id="new-project-input" placeholder="ID проекта (для видео Veo)" autocomplete="off"
+        style="flex:1;min-width:200px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);
+               border-radius:8px;color:var(--text);font-size:.9em;outline:none">
+      <button class="btn btn-primary" onclick="addKey()" style="white-space:nowrap">Добавить ключ</button>
+    </div>
   </div>
   <p style="color:var(--muted);font-size:.78em;margin-top:10px">
-    Ключ хранится в БД и применяется <b>немедленно</b> без перезапуска сервиса.
+    Ключ хранится в БД и применяется <b>немедленно</b> без перезапуска сервиса.<br>
+    📂 <b>ID проекта</b> — обязателен для генерации видео (Veo). Для изображений и чата — не нужен.
   </p>
   <p style="color:var(--muted);font-size:.78em;margin-top:6px;line-height:1.6">
     ⚡ <b>В работе</b> — прямо сейчас обрабатывает запрос(ы)<br>
@@ -1739,8 +1756,11 @@ setInterval(poll, 2000);
 
 async function addKey() {{
   const val = document.getElementById('new-key-input').value.trim();
+  const proj = document.getElementById('new-project-input').value.trim();
   if (!val) return;
-  const r = await fetch('/admin/api/keys/add', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{key:val}})}});
+  const body = {{key: val}};
+  if (proj) body.project_id = proj;
+  const r = await fetch('/admin/api/keys/add', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
   const d = await r.json();
   if (d.ok) location.href = '/admin/api-keys?msg=added';
   else if (d.error === 'exists') location.href = '/admin/api-keys?msg=exists';
@@ -1752,6 +1772,32 @@ async function deleteKey(idx) {{
   const r = await fetch('/admin/api/keys/delete', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{index:idx}})}});
   const d = await r.json();
   if (d.ok) location.href = '/admin/api-keys?msg=deleted';
+  else alert('Ошибка: ' + (d.error || 'неизвестная'));
+}}
+
+function showEdit(idx, maskedKey, projectId) {{
+  const modal = document.getElementById('edit-modal');
+  document.getElementById('edit-title').textContent = 'Редактировать ключ #' + (idx+1);
+  document.getElementById('edit-idx').value = idx;
+  document.getElementById('edit-key-input').value = '';
+  document.getElementById('edit-key-input').placeholder = maskedKey + ' (оставьте пустым чтобы не менять)';
+  document.getElementById('edit-project-input').value = projectId || '';
+  modal.style.display = 'flex';
+}}
+
+function closeEdit() {{
+  document.getElementById('edit-modal').style.display = 'none';
+}}
+
+async function saveEdit() {{
+  const idx = parseInt(document.getElementById('edit-idx').value);
+  const newKey = document.getElementById('edit-key-input').value.trim();
+  const newProj = document.getElementById('edit-project-input').value.trim();
+  const body = {{index: idx, project_id: newProj || null}};
+  if (newKey) body.key = newKey;
+  const r = await fetch('/admin/api/keys/update', {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});
+  const d = await r.json();
+  if (d.ok) location.href = '/admin/api-keys?msg=updated';
   else alert('Ошибка: ' + (d.error || 'неизвестная'));
 }}
 
@@ -1814,6 +1860,32 @@ function closeHistory() {{
 }}
 </script>
 
+<div id="edit-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:1001;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;max-width:520px;width:100%;padding:24px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+      <h2 id="edit-title" style="margin:0;font-size:1.1em;color:var(--text)">Редактировать ключ</h2>
+      <button onclick="closeEdit()" style="background:none;border:none;color:var(--muted);font-size:1.4em;cursor:pointer;padding:4px 8px">&times;</button>
+    </div>
+    <input type="hidden" id="edit-idx">
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div>
+        <label style="font-size:.82em;color:var(--muted);margin-bottom:4px;display:block">API ключ</label>
+        <input type="text" id="edit-key-input" autocomplete="off"
+          style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);
+                 border-radius:8px;color:var(--text);font-size:.9em;outline:none;box-sizing:border-box">
+      </div>
+      <div>
+        <label style="font-size:.82em;color:var(--muted);margin-bottom:4px;display:block">ID проекта Google Cloud</label>
+        <input type="text" id="edit-project-input" placeholder="my-project-123456" autocomplete="off"
+          style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);
+                 border-radius:8px;color:var(--text);font-size:.9em;outline:none;box-sizing:border-box">
+        <p style="color:var(--muted);font-size:.75em;margin-top:6px">Обязателен для генерации видео (Veo). Оставьте пустым если ключ только для изображений.</p>
+      </div>
+      <button class="btn btn-primary" onclick="saveEdit()" style="align-self:flex-end">Сохранить</button>
+    </div>
+  </div>
+</div>
+
 <div id="history-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;padding:20px">
   <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;max-width:1000px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden">
     <div style="display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid var(--border)">
@@ -1868,17 +1940,37 @@ async def api_keys_add(request: web.Request) -> web.Response:
     try:
         data = await request.json()
         key = data.get("key", "").strip()
+        project_id = data.get("project_id", "").strip() or None
         if not key:
             return web.Response(text=json.dumps({"ok": False, "error": "empty"}), content_type="application/json", status=400)
-        added = _key_store.add_key(key)
+        added = _key_store.add_key(key, project_id=project_id)
         if not added:
             return web.Response(text=json.dumps({"ok": False, "error": "exists"}), content_type="application/json", status=400)
         if _vertex_service is not None:
             _vertex_service.reload_keys()
-        logger.info("admin: API key added (masked=%s)", _key_store.mask_key(key))
+        logger.info("admin: API key added (masked=%s, project=%s)", _key_store.mask_key(key), project_id or "none")
         return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
     except Exception as e:
         logger.exception("api_keys_add error")
+        return web.Response(text=json.dumps({"ok": False, "error": str(e)}), content_type="application/json", status=500)
+
+
+@_api_require_auth
+async def api_keys_update(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+        index = int(data.get("index", -1))
+        new_key = data.get("key") or None
+        new_project_id = data.get("project_id", ...)
+        updated = _key_store.update_key(index, new_key=new_key, new_project_id=new_project_id)
+        if not updated:
+            return web.Response(text=json.dumps({"ok": False, "error": "not_found"}), content_type="application/json", status=404)
+        if _vertex_service is not None:
+            _vertex_service.reload_keys()
+        logger.info("admin: API key #%d updated (project=%s)", index + 1, new_project_id if new_project_id is not ... else "unchanged")
+        return web.Response(text=json.dumps({"ok": True}), content_type="application/json")
+    except Exception as e:
+        logger.exception("api_keys_update error")
         return web.Response(text=json.dumps({"ok": False, "error": str(e)}), content_type="application/json", status=500)
 
 
@@ -2942,6 +3034,7 @@ def register_admin_routes(app: web.Application) -> None:
     app.router.add_post("/admin/api/test-log-channel",       api_test_log_channel)
     app.router.add_get("/admin/api/keys/status",             api_keys_status)
     app.router.add_post("/admin/api/keys/add",               api_keys_add)
+    app.router.add_post("/admin/api/keys/update",            api_keys_update)
     app.router.add_post("/admin/api/keys/delete",            api_keys_delete)
     app.router.add_get("/admin/api/keys/{index}/history",    api_keys_history)
     app.router.add_get("/admin/tg-photo/{file_unique_id}",   handle_tg_photo)
