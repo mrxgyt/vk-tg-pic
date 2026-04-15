@@ -29,6 +29,7 @@ _PERSISTENT_KEYS = {
     "model", "send_mode", "resolution", "aspect_ratio", "thinking_level",
     "first_name", "generations_count", "platform",
     "credits", "blocked",
+    "video_duration", "video_resolution", "video_aspect_ratio",
 }
 
 user_settings: dict[int, dict[str, Any]] = {}
@@ -55,12 +56,58 @@ AVAILABLE_MODELS: dict[str, dict[str, Any]] = {
     "gemini-3.1-flash-image-preview": {
         "label": "⚡ Gemini 3.1 Flash Image",
         "desc": "Быстрая генерация, баланс цены и качества",
+        "type": "image",
     },
     "gemini-3-pro-image-preview": {
         "label": "🎯 Gemini 3 Pro Image",
         "desc": "Лучшее качество, сложные задачи",
+        "type": "image",
+    },
+    "veo-3.1-generate-001": {
+        "label": "🎬 Veo 3.1 (Видео)",
+        "desc": "Высокое качество видео, до 8 сек",
+        "type": "video",
+        "credits": 5,
+    },
+    "veo-3.1-fast-generate-001": {
+        "label": "⚡ Veo 3.1 Fast (Видео)",
+        "desc": "Быстрая генерация видео, до 8 сек",
+        "type": "video",
+        "credits": 3,
+    },
+    "veo-3.1-lite-generate-001": {
+        "label": "💡 Veo 3.1 Lite (Видео)",
+        "desc": "Экономичная генерация видео",
+        "type": "video",
+        "credits": 2,
     },
 }
+
+VIDEO_DURATIONS: dict[int, dict[str, str]] = {
+    4: {"label": "⏱ 4 секунды", "desc": "Короткий клип"},
+    6: {"label": "⏱ 6 секунд", "desc": "Средний клип"},
+    8: {"label": "⏱ 8 секунд", "desc": "Максимальный клип"},
+}
+
+VIDEO_RESOLUTIONS: dict[str, dict[str, str]] = {
+    "720p": {"label": "📺 720p (HD)", "desc": "Стандартное качество"},
+    "1080p": {"label": "🖥 1080p (Full HD)", "desc": "Высокое качество"},
+}
+
+VIDEO_ASPECT_RATIOS: dict[str, str] = {
+    "16:9": "16:9 (Горизонтальный)",
+    "9:16": "9:16 (Вертикальный)",
+}
+
+
+def is_video_model(model_id: str) -> bool:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return info.get("type") == "video"
+
+
+def get_video_credits_cost(model_id: str) -> int:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return info.get("credits", 3)
 
 RESOLUTIONS: dict[str, dict[str, Any]] = {
     "original": {
@@ -128,6 +175,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "last_menu_chat_id": None,
     "credits": FREE_CREDITS,
     "blocked": False,
+    "video_duration": 8,
+    "video_resolution": "720p",
+    "video_aspect_ratio": "16:9",
 }
 
 

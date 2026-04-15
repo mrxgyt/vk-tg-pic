@@ -50,10 +50,17 @@ RATE_WINDOW_SECONDS = 60
 # Image-generation models are expensive — keep their QPM low.
 # Text/chat models (gemini-3.1-pro-preview, etc.) have much higher quotas.
 MODEL_QPM: dict[str, int] = {
-    "flash-image": 5,   # gemini-x.x-flash-image-preview
-    "pro-image":   3,   # gemini-x-pro-image-preview
-    "default":    60,   # text/chat models — no artificial low limit
+    "flash-image": 5,
+    "pro-image":   3,
+    "veo-3.1":     2,
+    "veo-":        2,
+    "default":    60,
 }
+
+VIDEO_MODELS = {"veo-3.1-generate-001", "veo-3.1-fast-generate-001", "veo-3.1-lite-generate-001"}
+
+VIDEO_POLL_INTERVAL = 10
+VIDEO_POLL_TIMEOUT = 600
 
 
 def _qpm_for_model(model: str) -> int:
@@ -773,6 +780,178 @@ class VertexAIService:
             raise GenerationError(f"Модель вернула текст вместо изображения: {refusal_text[:300]}")
 
         raise GenerationError("The model did not return an image part.")
+
+    async def generate_video(
+        self,
+        prompt: str,
+        model: str = "veo-3.1-generate-001",
+        aspect_ratio: str = "16:9",
+        duration_seconds: int = 8,
+        resolution: str = "720p",
+        person_generation: str = "allow_adult",
+        user_id: int | None = None,
+        username: str = "",
+        on_progress: Any = None,
+    ) -> bytes:
+        from google.genai import types as genai_types
+
+        if model not in VIDEO_MODELS:
+            model = "veo-3.1-generate-001"
+
+        if aspect_ratio not in ("16:9", "9:16"):
+            aspect_ratio = "16:9"
+
+        if duration_seconds not in (4, 6, 8):
+            duration_seconds = 8
+
+        deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
+        _t0 = time.monotonic()
+
+        while time.monotonic() < deadline:
+            slot = self._get_next_available_slot(model)
+            if slot is None:
+                earliest = self._earliest_ready_at(model)
+                now = time.monotonic()
+                wait = max(0.1, earliest - now)
+                if now + wait > deadline:
+                    break
+                await asyncio.sleep(wait + 0.1)
+                continue
+
+            slot.record_request(model)
+            slot.active_requests += 1
+            slot.last_used_at = time.monotonic()
+            slot.last_model = model
+
+            try:
+                client = slot.get_client()
+
+                config = genai_types.GenerateVideosConfig(
+                    aspect_ratio=aspect_ratio,
+                    duration_seconds=duration_seconds,
+                    resolution=resolution,
+                    person_generation=person_generation,
+                    number_of_videos=1,
+                    enhance_prompt=True,
+                )
+
+                logger.info(
+                    "Video: trying '%s' model=%s prompt='%s'",
+                    slot.label, model, prompt[:60],
+                )
+
+                loop = asyncio.get_running_loop()
+                import functools
+                operation = await loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        client.models.generate_videos,
+                        model=model,
+                        prompt=prompt,
+                        config=config,
+                    ),
+                )
+
+                poll_count = 0
+                while not operation.done:
+                    poll_count += 1
+                    if time.monotonic() > deadline:
+                        raise GenerationError("Таймаут ожидания генерации видео")
+                    if on_progress:
+                        try:
+                            on_progress(poll_count * VIDEO_POLL_INTERVAL)
+                        except Exception:
+                            pass
+                    await asyncio.sleep(VIDEO_POLL_INTERVAL)
+                    operation = await loop.run_in_executor(
+                        None,
+                        functools.partial(client.operations.get, operation),
+                    )
+
+                if not operation.result or not operation.result.generated_videos:
+                    raise GenerationError("Модель не вернула видео")
+
+                video = operation.result.generated_videos[0].video
+                video_bytes: bytes | None = None
+
+                if hasattr(video, 'video_bytes') and video.video_bytes:
+                    video_bytes = video.video_bytes
+                elif hasattr(video, 'uri') and video.uri:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(video.uri, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                            if resp.status == 200:
+                                video_bytes = await resp.read()
+                            else:
+                                raise GenerationError(f"Не удалось скачать видео: HTTP {resp.status}")
+
+                if not video_bytes:
+                    raise GenerationError("Видео сгенерировано, но данные недоступны")
+
+                _dur = int((time.monotonic() - _t0) * 1000)
+                slot.total_ok += 1
+                slot.record_history(
+                    user_id=user_id, username=username, prompt=prompt,
+                    model=model, status="ok", duration_ms=_dur,
+                )
+                logger.info(
+                    "Video OK: slot='%s' model=%s duration=%.1fs size=%.1f KB",
+                    slot.label, model, _dur / 1000, len(video_bytes) / 1024,
+                )
+                return video_bytes
+
+            except (SafetyFilterError, GenerationError):
+                raise
+            except Exception as exc:
+                slot.total_err += 1
+                _dur = int((time.monotonic() - _t0) * 1000)
+                logger.error("Video: slot '%s' error: %s", slot.label, repr(exc))
+
+                if _is_safety_error(exc):
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="safety", error=str(exc)[:200],
+                        duration_ms=_dur,
+                    )
+                    raise SafetyFilterError(str(exc))
+                elif _is_server_error(exc) and not any(
+                    kw in str(exc).lower() for kw in ("429", "quota", "resource exhausted")
+                ):
+                    slot.cooldown_until = time.monotonic() + 15
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="server_error", error=str(exc)[:200],
+                        duration_ms=_dur,
+                    )
+                elif _is_retryable(exc):
+                    slot.mark_rate_limited()
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="rate_limit", error="429",
+                        duration_ms=_dur,
+                    )
+                elif _is_auth_error(exc):
+                    slot.reset_client()
+                    slot.auth_error = True
+                    slot.auth_error_msg = str(exc)[:120]
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="auth_error", error=str(exc)[:200],
+                        duration_ms=_dur,
+                    )
+                else:
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="error", error=str(exc)[:200],
+                        duration_ms=_dur,
+                    )
+                    raise GenerationError(str(exc))
+            finally:
+                slot.active_requests = max(0, slot.active_requests - 1)
+
+        logger.error("Video deadline reached — all slots busy for model %s", model)
+        self._alert_quota_exhausted(model)
+        raise QuotaExceededError()
 
     CHAT_MODEL = "gemini-3.1-pro-preview"
     SEARCH_MODEL = "gemini-3.1-flash-lite-preview"

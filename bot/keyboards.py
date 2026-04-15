@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
-from bot.user_settings import get_user_settings, AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS
+from bot.user_settings import (
+    get_user_settings, AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
+    VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, is_video_model,
+)
 
 BTN_MENU = "📋 Меню"
 BTN_STOP = "⛔ Стоп"
@@ -56,7 +59,12 @@ def get_model_keyboard(user_id: int) -> InlineKeyboardMarkup:
     current = settings.get("model", "gemini-3.1-flash-image-preview")
 
     rows: list[list[InlineKeyboardButton]] = []
-    for model_id, info in AVAILABLE_MODELS.items():
+
+    image_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.get("type") != "video"}
+    video_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.get("type") == "video"}
+
+    rows.append([InlineKeyboardButton(text="── 🖼 Изображения ──", callback_data="noop")])
+    for model_id, info in image_models.items():
         label = info["label"]
         if model_id == current:
             label = "✅ " + label
@@ -64,6 +72,65 @@ def get_model_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=label, callback_data=f"model_{model_id}")
         ])
 
+    rows.append([InlineKeyboardButton(text="── 🎬 Видео ──", callback_data="noop")])
+    for model_id, info in video_models.items():
+        label = info["label"]
+        credits = info.get("credits", 3)
+        if model_id == current:
+            label = "✅ " + label
+        label += f" ({credits} кр.)"
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"model_{model_id}")
+        ])
+
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_video_duration_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_duration", 8)
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for dur, info in VIDEO_DURATIONS.items():
+        label = info["label"]
+        if dur == current:
+            label = "✅ " + label
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"vdur_{dur}")
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_video_resolution_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_resolution", "720p")
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for res_id, info in VIDEO_RESOLUTIONS.items():
+        label = info["label"]
+        if res_id == current:
+            label = "✅ " + label
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"vres_{res_id}")
+        ])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_video_aspect_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_aspect_ratio", "16:9")
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for key, label_text in VIDEO_ASPECT_RATIOS.items():
+        label = label_text
+        if key == current:
+            label = "✅ " + label
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"vaspect_{key}")
+        ])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -161,10 +228,6 @@ def get_settings_summary_keyboard(user_id: int) -> InlineKeyboardMarkup:
     settings = get_user_settings(user_id)
     current_model = settings.get("model", "gemini-3.1-flash-image-preview")
     model_label = _model_short_label(current_model)
-    send_info = SEND_MODES.get(settings.get("send_mode", "photo"), {})
-    send_label = send_info.get("label", "🖼 Фото")
-    res_info = RESOLUTIONS.get(settings.get("resolution", "original"), {})
-    res_label = res_info.get("label", "📷 Оригинал")
 
     rows: list[list[InlineKeyboardButton]] = [
         [
@@ -175,36 +238,70 @@ def get_settings_summary_keyboard(user_id: int) -> InlineKeyboardMarkup:
         ],
     ]
 
-    aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
-    rows.append([
-        InlineKeyboardButton(
-            text=f"📐 Размер: {aspect_label}",
-            callback_data="choose_aspect",
-        ),
-    ])
-
-    if _is_flash_model(current_model):
-        thinking_info = THINKING_LEVELS.get(settings.get("thinking_level", "low"), {})
-        thinking_label = thinking_info.get("label", "💭 Лёгкий")
+    if is_video_model(current_model):
+        v_aspect = VIDEO_ASPECT_RATIOS.get(settings.get("video_aspect_ratio", "16:9"), "16:9")
         rows.append([
             InlineKeyboardButton(
-                text=f"🧠 Мышление: {thinking_label}",
-                callback_data="choose_thinking",
+                text=f"📐 Формат: {v_aspect}",
+                callback_data="choose_video_aspect",
             ),
         ])
 
-    rows.append([
-        InlineKeyboardButton(
-            text=f"🔍 Качество: {res_label}",
-            callback_data="choose_resolution",
-        ),
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            text=f"📤 Формат: {send_label}",
-            callback_data="choose_send_mode",
-        ),
-    ])
+        dur = settings.get("video_duration", 8)
+        dur_info = VIDEO_DURATIONS.get(dur, {})
+        dur_label = dur_info.get("label", f"⏱ {dur} сек")
+        rows.append([
+            InlineKeyboardButton(
+                text=f"⏱ Длительность: {dur_label}",
+                callback_data="choose_video_duration",
+            ),
+        ])
+
+        vres = settings.get("video_resolution", "720p")
+        vres_info = VIDEO_RESOLUTIONS.get(vres, {})
+        vres_label = vres_info.get("label", vres)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📺 Разрешение: {vres_label}",
+                callback_data="choose_video_resolution",
+            ),
+        ])
+    else:
+        aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📐 Размер: {aspect_label}",
+                callback_data="choose_aspect",
+            ),
+        ])
+
+        if _is_flash_model(current_model):
+            thinking_info = THINKING_LEVELS.get(settings.get("thinking_level", "low"), {})
+            thinking_label = thinking_info.get("label", "💭 Лёгкий")
+            rows.append([
+                InlineKeyboardButton(
+                    text=f"🧠 Мышление: {thinking_label}",
+                    callback_data="choose_thinking",
+                ),
+            ])
+
+        send_info = SEND_MODES.get(settings.get("send_mode", "photo"), {})
+        send_label = send_info.get("label", "🖼 Фото")
+        res_info = RESOLUTIONS.get(settings.get("resolution", "original"), {})
+        res_label = res_info.get("label", "📷 Оригинал")
+
+        rows.append([
+            InlineKeyboardButton(
+                text=f"🔍 Качество: {res_label}",
+                callback_data="choose_resolution",
+            ),
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                text=f"📤 Формат: {send_label}",
+                callback_data="choose_send_mode",
+            ),
+        ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

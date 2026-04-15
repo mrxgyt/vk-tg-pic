@@ -4,6 +4,7 @@ from vkbottle import Keyboard, KeyboardButtonColor, Text, Callback
 
 from bot.user_settings import (
     get_user_settings, AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
+    VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, is_video_model,
 )
 from bot.keyboards import ASPECT_RATIOS
 
@@ -30,29 +31,44 @@ def get_settings_keyboard(user_id: int) -> str:
     model_info = AVAILABLE_MODELS.get(current_model, {})
     model_label = model_info.get("label", current_model)
 
-    send_info = SEND_MODES.get(settings.get("send_mode", "photo"), {})
-    send_label = send_info.get("label", "🖼 Фото")
-
-    res_info = RESOLUTIONS.get(settings.get("resolution", "original"), {})
-    res_label = res_info.get("label", "📷 Оригинал")
-
-    aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
-
     kb = Keyboard(inline=True)
     kb.add(Callback(f"🤖 {model_label}", payload={"cmd": "choose_model"}))
     kb.row()
-    kb.add(Callback(f"📐 Размер: {aspect_label}", payload={"cmd": "choose_aspect"}))
-    kb.row()
 
-    if _is_flash_model(current_model):
-        thinking_info = THINKING_LEVELS.get(settings.get("thinking_level", "low"), {})
-        thinking_label = thinking_info.get("label", "💭 Лёгкий")
-        kb.add(Callback(f"🧠 Мышление: {thinking_label}", payload={"cmd": "choose_thinking"}))
+    if is_video_model(current_model):
+        v_aspect = VIDEO_ASPECT_RATIOS.get(settings.get("video_aspect_ratio", "16:9"), "16:9")
+        kb.add(Callback(f"📐 Формат: {v_aspect}", payload={"cmd": "choose_video_aspect"}))
         kb.row()
 
-    kb.add(Callback(f"🔍 Качество: {res_label}", payload={"cmd": "choose_resolution"}))
-    kb.row()
-    kb.add(Callback(f"📤 Формат: {send_label}", payload={"cmd": "choose_send_mode"}))
+        dur = settings.get("video_duration", 8)
+        dur_info = VIDEO_DURATIONS.get(dur, {})
+        dur_label = dur_info.get("label", f"⏱ {dur} сек")
+        kb.add(Callback(f"⏱ {dur_label}", payload={"cmd": "choose_video_duration"}))
+        kb.row()
+
+        vres = settings.get("video_resolution", "720p")
+        vres_info = VIDEO_RESOLUTIONS.get(vres, {})
+        vres_label = vres_info.get("label", vres)
+        kb.add(Callback(f"📺 {vres_label}", payload={"cmd": "choose_video_resolution"}))
+    else:
+        aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
+        kb.add(Callback(f"📐 Размер: {aspect_label}", payload={"cmd": "choose_aspect"}))
+        kb.row()
+
+        if _is_flash_model(current_model):
+            thinking_info = THINKING_LEVELS.get(settings.get("thinking_level", "low"), {})
+            thinking_label = thinking_info.get("label", "💭 Лёгкий")
+            kb.add(Callback(f"🧠 Мышление: {thinking_label}", payload={"cmd": "choose_thinking"}))
+            kb.row()
+
+        send_info = SEND_MODES.get(settings.get("send_mode", "photo"), {})
+        send_label = send_info.get("label", "🖼 Фото")
+        res_info = RESOLUTIONS.get(settings.get("resolution", "original"), {})
+        res_label = res_info.get("label", "📷 Оригинал")
+
+        kb.add(Callback(f"🔍 Качество: {res_label}", payload={"cmd": "choose_resolution"}))
+        kb.row()
+        kb.add(Callback(f"📤 Формат: {send_label}", payload={"cmd": "choose_send_mode"}))
     return kb.get_json()
 
 
@@ -60,12 +76,70 @@ def get_model_keyboard(user_id: int) -> str:
     settings = get_user_settings(user_id)
     current = settings.get("model", "gemini-3.1-flash-image-preview")
 
+    image_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.get("type") != "video"}
+    video_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.get("type") == "video"}
+
     kb = Keyboard(inline=True)
-    for model_id, info in AVAILABLE_MODELS.items():
+
+    for model_id, info in image_models.items():
         label = info["label"]
         if model_id == current:
             label = "✅ " + label
         kb.add(Callback(label, payload={"cmd": "set_model", "id": model_id}))
+        kb.row()
+
+    if video_models:
+        kb.add(Callback("── 🎬 Видео модели ──", payload={"cmd": "noop"}))
+        kb.row()
+        for model_id, info in video_models.items():
+            label = info["label"]
+            if model_id == current:
+                label = "✅ " + label
+            kb.add(Callback(label, payload={"cmd": "set_model", "id": model_id}))
+            kb.row()
+
+    kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
+    return kb.get_json()
+
+
+def get_video_duration_keyboard(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_duration", 8)
+
+    kb = Keyboard(inline=True)
+    for dur, info in VIDEO_DURATIONS.items():
+        label = info["label"]
+        if dur == current:
+            label = "✅ " + label
+        kb.add(Callback(label, payload={"cmd": "set_video_duration", "id": dur}))
+        kb.row()
+    kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
+    return kb.get_json()
+
+
+def get_video_resolution_keyboard(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_resolution", "720p")
+
+    kb = Keyboard(inline=True)
+    for res, info in VIDEO_RESOLUTIONS.items():
+        label = info["label"]
+        if res == current:
+            label = "✅ " + label
+        kb.add(Callback(label, payload={"cmd": "set_video_resolution", "id": res}))
+        kb.row()
+    kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
+    return kb.get_json()
+
+
+def get_video_aspect_keyboard(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_aspect_ratio", "16:9")
+
+    kb = Keyboard(inline=True)
+    for ratio, label in VIDEO_ASPECT_RATIOS.items():
+        text = f"✅ {label}" if ratio == current else label
+        kb.add(Callback(text, payload={"cmd": "set_video_aspect", "id": ratio}))
         kb.row()
     kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
     return kb.get_json()

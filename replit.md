@@ -54,8 +54,17 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 
 ## Credits System
 - 5 free credits on registration (FREE_CREDITS = 5)
-- 1 credit per generation, 2 credits for 4K
+- 1 credit per image generation, 2 credits for 4K
+- Video: 5 credits (Veo 3.1), 3 credits (Fast), 2 credits (Lite)
 - Packages: 30 credits (99₽), 100 credits (299₽), 200 credits (549₽)
+
+## Video Generation (Veo 3.1)
+- Models: veo-3.1-generate-001, veo-3.1-fast-generate-001, veo-3.1-lite-generate-001
+- Settings: duration (4/6/8 sec), resolution (720p/1080p), aspect ratio (16:9, 9:16)
+- Video models only accept text prompts — photo input is rejected with a message
+- Implementation: `VertexAIService.generate_video()` with async polling (10s interval, 600s timeout)
+- Supported on both Telegram (reply_video) and VK (document upload as .mp4)
+- User settings: video_duration, video_resolution, video_aspect_ratio (persisted)
 
 ## Bot UI
 - Persistent keyboard: Menu, Ideas, Settings, Balance, Stop

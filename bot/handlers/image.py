@@ -25,7 +25,7 @@ from bot.user_settings import (
     get_user_settings, pop_last_menu,
     set_active_task, clear_active_task, increment_generations,
     AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS,
-    is_blocked, has_credits,
+    is_blocked, has_credits, is_video_model, get_video_credits_cost,
 )
 from bot.keyboards import BTN_MENU, BTN_STOP, BTN_SETTINGS, BTN_CHAT
 from bot.log_channel import log_generation
@@ -225,6 +225,18 @@ async def handle_photo_prompt(
         await message.reply(msg, parse_mode="HTML")
         return
 
+    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
+
+    if is_video_model(user_model):
+        model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
+        await message.reply(
+            f"🎬 Модель <b>{model_label}</b> поддерживает только текстовые запросы.\n\n"
+            "Отправьте текстовое описание для генерации видео, "
+            "или переключите модель на изображения в настройках.",
+            parse_mode="HTML",
+        )
+        return
+
     caption = _collect_caption(photo_messages)
     if not caption:
         await message.reply(
@@ -237,7 +249,6 @@ async def handle_photo_prompt(
 
     bot: Bot = message.bot  # type: ignore[assignment]
     await _dismiss_menu(bot, uid)
-    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
     model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
     photo_count = len(photo_messages)
 
@@ -424,22 +435,24 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
         return
 
     settings = get_user_settings(uid)
-    credits_cost = 2 if settings.get("resolution") == "4k" else 1
+    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
+    _is_video = is_video_model(user_model)
+
+    if _is_video:
+        credits_cost = get_video_credits_cost(user_model)
+    else:
+        credits_cost = 2 if settings.get("resolution") == "4k" else 1
 
     if not has_credits(uid, credits_cost):
+        cost_label = f"{credits_cost} кредитов" if credits_cost > 1 else "1 кредит"
         msg = (
-            "💳 <b>Кредиты закончились</b>\n\n"
-            "У вас больше нет доступных генераций.\n"
-            "Для продолжения работы приобретите пополнение кредитов."
-            if credits_cost == 1 else
-            "💳 <b>Недостаточно кредитов</b>\n\n"
-            "Генерация в разрешении <b>4K стоит 2 кредита</b>.\n"
-            "Понизьте разрешение в настройках или пополните баланс."
+            f"💳 <b>Недостаточно кредитов</b>\n\n"
+            f"Генерация {'видео' if _is_video else 'изображения'} стоит <b>{cost_label}</b>.\n"
+            "Пополните баланс для продолжения."
         )
         await message.reply(msg, parse_mode="HTML")
         return
 
-    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
     model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
 
     bot: Bot = message.bot  # type: ignore[assignment]
@@ -450,16 +463,22 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
         queue_note = await message.reply(
             "⏳ <b>Ваш запрос поставлен в очередь.</b>\n"
             "Система сейчас обрабатывает максимальное количество одновременных запросов. "
-            "Ваше изображение будет сгенерировано в ближайшее время — пожалуйста, подождите.",
+            f"{'Видео' if _is_video else 'Изображение'} будет сгенерировано в ближайшее время.",
             parse_mode="HTML",
         )
         queue_msg_id = queue_note.message_id
 
+    gen_type = "видео" if _is_video else "изображение"
     base_text = (
-        f"🎨 <b>Генерирую изображение…</b>\n"
+        f"🎨 <b>Генерирую {gen_type}…</b>\n"
         f"🤖 {model_label}\n"
         f"<i>Промпт: {prompt[:100]}{'…' if len(prompt) > 100 else ''}</i>"
     )
+    if _is_video:
+        dur = settings.get("video_duration", 8)
+        vres = settings.get("video_resolution", "720p")
+        base_text += f"\n⏱ {dur} сек • 📺 {vres}"
+
     processing_msg = await message.reply(
         f"{base_text}\n\n◐ <b>Обработка — 0 сек.</b>",
         parse_mode="HTML",
@@ -468,65 +487,94 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
     animator = ProgressAnimator(processing_msg, base_text)
     animator.start()
 
-    resolution = settings.get("resolution", "original")
-    max_side = RESOLUTIONS.get(resolution, {}).get("max_side", 0)
-
-    aspect_ratio = settings.get("aspect_ratio", "1:1")
-    thinking_level = settings.get("thinking_level", "low")
-
     _uname_t = message.from_user.username or message.from_user.first_name or ""
 
-    async def _do_text_generate() -> bytes:
-        raw = await vertex_service.generate_image(
-            prompt=prompt,
-            model_override=user_model,
-            aspect_ratio=aspect_ratio,
-            thinking_level=thinking_level,
-            user_id=uid,
-            username=_uname_t,
-        )
-        if max_side > 0:
-            loop = asyncio.get_running_loop()
-            raw = await loop.run_in_executor(None, _upscale_image, raw, max_side)
-        return raw
+    if _is_video:
+        video_aspect = settings.get("video_aspect_ratio", "16:9")
+        video_duration = settings.get("video_duration", 8)
+        video_resolution = settings.get("video_resolution", "720p")
 
-    gen_task = asyncio.create_task(_do_text_generate())
+        async def _do_video_generate() -> bytes:
+            return await vertex_service.generate_video(
+                prompt=prompt,
+                model=user_model,
+                aspect_ratio=video_aspect,
+                duration_seconds=video_duration,
+                resolution=video_resolution,
+                user_id=uid,
+                username=_uname_t,
+            )
+
+        gen_task = asyncio.create_task(_do_video_generate())
+    else:
+        resolution = settings.get("resolution", "original")
+        max_side = RESOLUTIONS.get(resolution, {}).get("max_side", 0)
+        aspect_ratio = settings.get("aspect_ratio", "1:1")
+        thinking_level = settings.get("thinking_level", "low")
+
+        async def _do_text_generate() -> bytes:
+            raw = await vertex_service.generate_image(
+                prompt=prompt,
+                model_override=user_model,
+                aspect_ratio=aspect_ratio,
+                thinking_level=thinking_level,
+                user_id=uid,
+                username=_uname_t,
+            )
+            if max_side > 0:
+                loop = asyncio.get_running_loop()
+                raw = await loop.run_in_executor(None, _upscale_image, raw, max_side)
+            return raw
+
+        gen_task = asyncio.create_task(_do_text_generate())
+
     set_active_task(uid, gen_task)
 
     try:
-        image_bytes = await gen_task
+        result_bytes = await gen_task
 
         await animator.stop()
         clear_active_task(uid)
 
-        send_mode = settings.get("send_mode", "photo")
-        fname = _prompt_to_filename(prompt)
-        result_caption = f"✅ Ваше изображение готово!\n<i>{prompt[:200]}</i>"
-
-        if send_mode == "document":
-            doc = BufferedInputFile(file=image_bytes, filename=fname)
-            await message.reply_document(
-                document=doc,
+        if _is_video:
+            fname = _prompt_to_filename(prompt).replace(".png", ".mp4")
+            result_caption = f"✅ Ваше видео готово!\n<i>{prompt[:200]}</i>"
+            video_file = BufferedInputFile(file=result_bytes, filename=fname)
+            await message.reply_video(
+                video=video_file,
                 caption=result_caption,
                 parse_mode="HTML",
             )
         else:
-            photo = BufferedInputFile(file=image_bytes, filename=fname)
-            await message.reply_photo(
-                photo=photo,
-                caption=result_caption,
-                parse_mode="HTML",
-            )
+            send_mode = settings.get("send_mode", "photo")
+            fname = _prompt_to_filename(prompt)
+            result_caption = f"✅ Ваше изображение готово!\n<i>{prompt[:200]}</i>"
+
+            if send_mode == "document":
+                doc = BufferedInputFile(file=result_bytes, filename=fname)
+                await message.reply_document(
+                    document=doc,
+                    caption=result_caption,
+                    parse_mode="HTML",
+                )
+            else:
+                photo = BufferedInputFile(file=result_bytes, filename=fname)
+                await message.reply_photo(
+                    photo=photo,
+                    caption=result_caption,
+                    parse_mode="HTML",
+                )
 
         increment_generations(uid, message.from_user.first_name or "", platform="tg", credits_cost=credits_cost)
-        asyncio.create_task(log_generation(
-            image_bytes=image_bytes,
-            prompt=prompt,
-            user_id=uid,
-            user_name=message.from_user.first_name or str(uid),
-            platform="tg",
-            model=user_model,
-        ))
+        if not _is_video:
+            asyncio.create_task(log_generation(
+                image_bytes=result_bytes,
+                prompt=prompt,
+                user_id=uid,
+                user_name=message.from_user.first_name or str(uid),
+                platform="tg",
+                model=user_model,
+            ))
 
         try:
             await bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)
@@ -585,7 +633,7 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
         clear_active_task(uid)
         logger.exception("Unexpected error for prompt '%s': %s", prompt[:60], exc)
         await processing_msg.edit_text(
-            "Не удалось сгенерировать изображение 😔\n\n"
+            f"Не удалось сгенерировать {gen_type} 😔\n\n"
             "Попробуйте ещё раз или переключитесь на другую модель.",
             parse_mode="HTML",
             reply_markup=_suggest_switch_keyboard(user_model),

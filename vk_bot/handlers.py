@@ -18,6 +18,7 @@ from bot.user_settings import (
     is_blocked, has_credits, FREE_CREDITS,
     has_chat_quota, increment_chat_count,
     get_chat_daily_count, get_chat_daily_limit,
+    is_video_model, get_video_credits_cost,
 )
 from bot.keyboards import ASPECT_RATIOS
 from core.exceptions import BotError, QuotaExceededError, SafetyFilterError
@@ -455,6 +456,60 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 save_user_settings(uid)
             await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
 
+        elif cmd == "noop":
+            pass
+
+        elif cmd == "choose_video_duration":
+            from vk_bot.keyboards import get_video_duration_keyboard
+            from bot.user_settings import VIDEO_DURATIONS
+            lines = ["⏱ Длительность видео:\n"]
+            for dur, info in VIDEO_DURATIONS.items():
+                lines.append(f"  {info['label']}\n")
+            await edit_msg("\n".join(lines), get_video_duration_keyboard(uid))
+
+        elif cmd == "set_video_duration":
+            from bot.user_settings import VIDEO_DURATIONS
+            dur = data.get("id", 8)
+            if dur in VIDEO_DURATIONS:
+                settings = get_user_settings(uid)
+                settings["video_duration"] = dur
+                save_user_settings(uid)
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+
+        elif cmd == "choose_video_resolution":
+            from vk_bot.keyboards import get_video_resolution_keyboard
+            from bot.user_settings import VIDEO_RESOLUTIONS
+            lines = ["📺 Разрешение видео:\n"]
+            for res, info in VIDEO_RESOLUTIONS.items():
+                lines.append(f"  {info['label']}\n")
+            await edit_msg("\n".join(lines), get_video_resolution_keyboard(uid))
+
+        elif cmd == "set_video_resolution":
+            from bot.user_settings import VIDEO_RESOLUTIONS
+            res = data.get("id", "720p")
+            if res in VIDEO_RESOLUTIONS:
+                settings = get_user_settings(uid)
+                settings["video_resolution"] = res
+                save_user_settings(uid)
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+
+        elif cmd == "choose_video_aspect":
+            from vk_bot.keyboards import get_video_aspect_keyboard
+            from bot.user_settings import VIDEO_ASPECT_RATIOS
+            lines = ["📐 Соотношение сторон видео:\n"]
+            for ratio, label in VIDEO_ASPECT_RATIOS.items():
+                lines.append(f"  {label}\n")
+            await edit_msg("\n".join(lines), get_video_aspect_keyboard(uid))
+
+        elif cmd == "set_video_aspect":
+            from bot.user_settings import VIDEO_ASPECT_RATIOS
+            ratio = data.get("id", "16:9")
+            if ratio in VIDEO_ASPECT_RATIOS:
+                settings = get_user_settings(uid)
+                settings["video_aspect_ratio"] = ratio
+                save_user_settings(uid)
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+
         elif cmd == "switch_model":
             model_id = data.get("id", "")
             if model_id in AVAILABLE_MODELS:
@@ -778,30 +833,48 @@ async def _generate_and_send(
         return
 
     settings = get_user_settings(uid)
-    credits_cost = 2 if settings.get("resolution") == "4k" else 1
+    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
+    _is_video = is_video_model(user_model)
+
+    if _is_video and images:
+        model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
+        await bot.api.messages.send(
+            peer_id=peer_id, random_id=0,
+            message=f"🎬 Модель {model_label} поддерживает только текстовые запросы.\n\n"
+                    "Отправьте текстовое описание для генерации видео, "
+                    "или переключите модель на изображения в настройках.",
+        )
+        return
+
+    if _is_video:
+        credits_cost = get_video_credits_cost(user_model)
+    else:
+        credits_cost = 2 if settings.get("resolution") == "4k" else 1
 
     if not has_credits(uid, credits_cost):
+        cost_label = f"{credits_cost} кредитов" if credits_cost > 1 else "1 кредит"
         msg = (
-            "💳 Кредиты закончились\n\n"
-            "У вас больше нет доступных генераций.\n"
-            "Для продолжения работы приобретите пополнение кредитов."
-            if credits_cost == 1 else
-            "💳 Недостаточно кредитов\n\n"
-            "Генерация в разрешении 4K стоит 2 кредита.\n"
-            "Понизьте разрешение в настройках или пополните баланс."
+            f"💳 Недостаточно кредитов\n\n"
+            f"Генерация {'видео' if _is_video else 'изображения'} стоит {cost_label}.\n"
+            "Пополните баланс для продолжения."
         )
         await bot.api.messages.send(peer_id=peer_id, random_id=0, message=msg)
         return
 
-    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
     model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
     aspect_ratio = settings.get("aspect_ratio", "1:1")
     thinking_level = settings.get("thinking_level", "low")
     resolution = settings.get("resolution", "original")
     max_side = RESOLUTIONS.get(resolution, {}).get("max_side", 0)
 
-    action = "Редактирую" if images else "Генерирую"
-    base_text = f"🎨 {action} изображение...\n🤖 {model_label}"
+    gen_type = "видео" if _is_video else "изображение"
+    action = "Редактирую" if images and not _is_video else "Генерирую"
+    base_text = f"🎨 {action} {gen_type}...\n🤖 {model_label}"
+    if _is_video:
+        dur = settings.get("video_duration", 8)
+        vres = settings.get("video_resolution", "720p")
+        base_text += f"\n⏱ {dur} сек • 📺 {vres}"
+
     processing_id = await bot.api.messages.send(
         peer_id=peer_id, random_id=0,
         message=f"{base_text}\n\n◐ Обработка — 0 сек.",
@@ -812,48 +885,75 @@ async def _generate_and_send(
 
     start_time = time.monotonic()
 
-    async def _do_generate() -> bytes:
-        raw = await vertex_service.generate_image(
-            prompt=prompt,
-            images=images,
-            model_override=user_model,
-            aspect_ratio=aspect_ratio,
-            thinking_level=thinking_level,
-            user_id=uid,
-            username=f"vk:{uid}",
-        )
-        if max_side > 0:
-            loop = asyncio.get_running_loop()
-            raw = await loop.run_in_executor(None, _upscale_image, raw, max_side)
-        return raw
+    if _is_video:
+        video_aspect = settings.get("video_aspect_ratio", "16:9")
+        video_duration = settings.get("video_duration", 8)
+        video_resolution = settings.get("video_resolution", "720p")
+
+        async def _do_generate() -> bytes:
+            return await vertex_service.generate_video(
+                prompt=prompt,
+                model=user_model,
+                aspect_ratio=video_aspect,
+                duration_seconds=video_duration,
+                resolution=video_resolution,
+                user_id=uid,
+                username=f"vk:{uid}",
+            )
+    else:
+        async def _do_generate() -> bytes:
+            raw = await vertex_service.generate_image(
+                prompt=prompt,
+                images=images,
+                model_override=user_model,
+                aspect_ratio=aspect_ratio,
+                thinking_level=thinking_level,
+                user_id=uid,
+                username=f"vk:{uid}",
+            )
+            if max_side > 0:
+                loop = asyncio.get_running_loop()
+                raw = await loop.run_in_executor(None, _upscale_image, raw, max_side)
+            return raw
 
     gen_task = asyncio.create_task(_do_generate())
     active_tasks[uid] = gen_task
 
     try:
-        image_bytes = await gen_task
+        result_bytes = await gen_task
         await animator.stop()
         active_tasks.pop(uid, None)
         elapsed = int(time.monotonic() - start_time)
 
-        send_mode = settings.get("send_mode", "photo")
-        caption = f"✅ Изображение готово! ({elapsed} сек.)\n{prompt[:200]}"
-
-        upload_action = "📤 Загрузка файла" if send_mode == "document" else "📤 Загрузка фото"
-        upload_base = f"🎨 {action} изображение...\n🤖 {model_label}\n\n✅ Готово за {elapsed} сек."
-        upload_animator = VKProgressAnimator(
-            bot, peer_id, processing_id, upload_base,
-            action_text=upload_action,
-        )
-        upload_animator.start()
-
-        try:
-            if send_mode == "document":
-                attachment = await upload_document_to_vk(bot.api, peer_id, image_bytes)
-            else:
-                attachment = await upload_photo_to_vk(bot.api, peer_id, image_bytes)
-        finally:
-            await upload_animator.stop()
+        if _is_video:
+            caption = f"✅ Видео готово! ({elapsed} сек.)\n{prompt[:200]}"
+            upload_base = f"🎨 {action} {gen_type}...\n🤖 {model_label}\n\n✅ Готово за {elapsed} сек."
+            upload_animator = VKProgressAnimator(
+                bot, peer_id, processing_id, upload_base,
+                action_text="📤 Загрузка видео",
+            )
+            upload_animator.start()
+            try:
+                attachment = await upload_document_to_vk(bot.api, peer_id, result_bytes, filename="video.mp4")
+            finally:
+                await upload_animator.stop()
+        else:
+            send_mode = settings.get("send_mode", "photo")
+            caption = f"✅ Изображение готово! ({elapsed} сек.)\n{prompt[:200]}"
+            upload_action = "📤 Загрузка файла" if send_mode == "document" else "📤 Загрузка фото"
+            upload_base = f"🎨 {action} {gen_type}...\n🤖 {model_label}\n\n✅ Готово за {elapsed} сек."
+            upload_animator = VKProgressAnimator(
+                bot, peer_id, processing_id, upload_base,
+                action_text=upload_action,
+            )
+            upload_animator.start()
+            try:
+                if send_mode == "document":
+                    attachment = await upload_document_to_vk(bot.api, peer_id, result_bytes)
+                else:
+                    attachment = await upload_photo_to_vk(bot.api, peer_id, result_bytes)
+            finally:
+                await upload_animator.stop()
 
         await bot.api.messages.send(
             peer_id=peer_id, random_id=0,
@@ -868,13 +968,14 @@ async def _generate_and_send(
         except Exception:
             pass
 
-        asyncio.create_task(log_generation_vk(
-            image_bytes=image_bytes,
-            prompt=prompt,
-            user_id=uid,
-            user_name=settings.get("first_name") or str(uid),
-            model=user_model,
-        ))
+        if not _is_video:
+            asyncio.create_task(log_generation_vk(
+                image_bytes=result_bytes,
+                prompt=prompt,
+                user_id=uid,
+                user_name=settings.get("first_name") or str(uid),
+                model=user_model,
+            ))
 
         try:
             await bot.api.messages.delete(
@@ -938,7 +1039,7 @@ async def _generate_and_send(
         try:
             await bot.api.messages.edit(
                 peer_id=peer_id, message_id=processing_id,
-                message="Не удалось сгенерировать изображение.\nПопробуйте ещё раз.",
+                message=f"Не удалось сгенерировать {gen_type}.\nПопробуйте ещё раз.",
                 keyboard=get_switch_model_keyboard(user_model),
             )
         except Exception:
