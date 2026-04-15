@@ -308,10 +308,16 @@ class _ApiKeySlot(_BaseSlot):
     def get_video_client(self) -> Any:
         if self._video_client is None:
             import google.genai as genai
-            self._video_client = genai.Client(
-                api_key=self._api_key,
-            )
-            logger.info("Initialised VIDEO client for '%s' (Gemini Developer API)", self.label)
+            kwargs: dict[str, Any] = {
+                "vertexai": True,
+                "api_key": self._api_key,
+            }
+            if self._project_id:
+                kwargs["project"] = self._project_id
+                kwargs["location"] = "us-central1"
+            self._video_client = genai.Client(**kwargs)
+            proj_info = f", project={self._project_id}" if self._project_id else ""
+            logger.info("Initialised VIDEO client for '%s' (Vertex AI%s)", self.label, proj_info)
         return self._video_client
 
 
@@ -487,7 +493,12 @@ class VertexAIService:
         return model.startswith("veo-")
 
     def _filter_slots_for_model(self, model: str) -> list[_BaseSlot]:
-        return [s for s in self._slots if not s.auth_error]
+        usable = [s for s in self._slots if not s.auth_error]
+        if self._is_video_model(model):
+            with_project = [s for s in usable if (isinstance(s, _ApiKeySlot) and s.has_project) or isinstance(s, _CredSlot)]
+            if with_project:
+                return with_project
+        return usable
 
     def _get_next_available_slot(self, model: str) -> _BaseSlot | None:
         """Return the next ready slot using round-robin rotation.
@@ -891,18 +902,15 @@ class VertexAIService:
                 else:
                     client = slot.get_client()
 
-                is_gemini_api = isinstance(slot, _ApiKeySlot)
-                cfg_kwargs: dict[str, Any] = dict(
+                config = genai_types.GenerateVideosConfig(
                     aspect_ratio=aspect_ratio,
                     duration_seconds=duration_seconds,
                     resolution=resolution,
                     person_generation=person_generation,
                     number_of_videos=1,
+                    enhance_prompt=True,
+                    generate_audio=generate_audio,
                 )
-                if not is_gemini_api:
-                    cfg_kwargs["enhance_prompt"] = True
-                    cfg_kwargs["generate_audio"] = generate_audio
-                config = genai_types.GenerateVideosConfig(**cfg_kwargs)
 
                 gen_kwargs: dict[str, Any] = {
                     "model": model,

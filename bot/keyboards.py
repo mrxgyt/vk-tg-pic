@@ -354,6 +354,10 @@ def get_settings_summary_keyboard(user_id: int) -> InlineKeyboardMarkup:
     ]
 
     if is_video_model(current_model):
+        task_id = settings.get("video_task", "text-to-video")
+        task_label = VIDEO_TASKS.get(task_id, {}).get("label", task_id)
+        rows.append([InlineKeyboardButton(text=f"🎯 {task_label}", callback_data="choose_video_task")])
+
         aspect = settings.get("video_aspect_ratio", "16:9")
         dur = settings.get("video_duration", 8)
         res = settings.get("video_resolution", "720p")
