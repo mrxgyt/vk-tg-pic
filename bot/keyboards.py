@@ -11,7 +11,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 from bot.user_settings import (
     get_user_settings, AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
     VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, is_video_model,
-    get_video_credits_cost, video_supports_audio,
+    get_video_credits_cost, video_supports_audio, video_supports_image,
+    get_video_resolutions_for_model,
 )
 
 BTN_MENU = "📋 Меню"
@@ -143,12 +144,15 @@ def get_video_panel_text(user_id: int) -> str:
     model_label = model_info.get("label", model_id)
     credits = model_info.get("credits", 3)
     has_audio = video_supports_audio(model_id)
-    has_image = model_info.get("supports_image", False)
+    has_image = video_supports_image(model_id)
 
     aspect = settings.get("video_aspect_ratio", "16:9")
     aspect_label = VIDEO_ASPECT_RATIOS.get(aspect, aspect)
     dur = settings.get("video_duration", 8)
     res = settings.get("video_resolution", "720p")
+    avail_res = get_video_resolutions_for_model(model_id)
+    if res not in avail_res:
+        res = "1080p"
     res_info = VIDEO_RESOLUTIONS.get(res, {})
     res_label = res_info.get("label", res)
     audio = settings.get("video_audio", True)
@@ -184,6 +188,7 @@ def get_video_panel_keyboard(user_id: int) -> InlineKeyboardMarkup:
     res = settings.get("video_resolution", "720p")
     audio = settings.get("video_audio", True)
     has_audio = video_supports_audio(model_id)
+    avail_res = get_video_resolutions_for_model(model_id)
 
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -203,8 +208,8 @@ def get_video_panel_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
     rows.append([InlineKeyboardButton(text="── 📺 Разрешение ──", callback_data="noop")])
     res_row: list[InlineKeyboardButton] = []
-    for r in VIDEO_RESOLUTIONS:
-        r_label = r.upper() if r == "720p" else r
+    for r in avail_res:
+        r_label = avail_res[r].get("label", r).replace("📺 ", "").replace("🖥 ", "").replace("📽 ", "")
         text = f"✅ {r_label}" if r == res else r_label
         res_row.append(InlineKeyboardButton(text=text, callback_data=f"vp_res_{r}"))
     rows.append(res_row)
@@ -326,6 +331,9 @@ def get_settings_summary_keyboard(user_id: int) -> InlineKeyboardMarkup:
         res = settings.get("video_resolution", "720p")
         audio = settings.get("video_audio", True)
         has_audio = video_supports_audio(current_model)
+        avail_res = get_video_resolutions_for_model(current_model)
+        if res not in avail_res:
+            res = "1080p"
 
         aspect_row: list[InlineKeyboardButton] = []
         for key, label in VIDEO_ASPECT_RATIOS.items():
@@ -340,8 +348,8 @@ def get_settings_summary_keyboard(user_id: int) -> InlineKeyboardMarkup:
         rows.append(dur_row)
 
         res_row: list[InlineKeyboardButton] = []
-        for r in VIDEO_RESOLUTIONS:
-            r_label = r.upper() if r == "720p" else r
+        for r in avail_res:
+            r_label = avail_res[r].get("label", r).replace("📺 ", "").replace("🖥 ", "").replace("📽 ", "")
             text = f"✅ {r_label}" if r == res else r_label
             res_row.append(InlineKeyboardButton(text=text, callback_data=f"vp_res_{r}"))
         rows.append(res_row)

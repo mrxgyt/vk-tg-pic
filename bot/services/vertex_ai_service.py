@@ -795,6 +795,7 @@ class VertexAIService:
         user_id: int | None = None,
         username: str = "",
         on_progress: Any = None,
+        image: bytes | None = None,
     ) -> bytes:
         from google.genai import types as genai_types
 
@@ -807,6 +808,12 @@ class VertexAIService:
         if duration_seconds not in (4, 6, 8):
             duration_seconds = 8
 
+        if image is not None:
+            duration_seconds = 8
+
+        if resolution not in ("720p", "1080p", "4k"):
+            resolution = "720p"
+
         async with self._semaphore:
             return await self._generate_video_inner(
                 prompt=prompt, model=model,
@@ -814,6 +821,7 @@ class VertexAIService:
                 resolution=resolution, person_generation=person_generation,
                 generate_audio=generate_audio,
                 user_id=user_id, username=username, on_progress=on_progress,
+                image=image,
             )
 
     async def _generate_video_inner(
@@ -828,6 +836,7 @@ class VertexAIService:
         user_id: int | None,
         username: str,
         on_progress: Any,
+        image: bytes | None = None,
     ) -> bytes:
         from google.genai import types as genai_types
 
@@ -864,9 +873,21 @@ class VertexAIService:
                     generate_audio=generate_audio,
                 )
 
+                gen_kwargs: dict[str, Any] = {
+                    "model": model,
+                    "prompt": prompt,
+                    "config": config,
+                }
+                if image is not None:
+                    gen_kwargs["image"] = genai_types.Image(
+                        image_bytes=image,
+                        mime_type="image/jpeg",
+                    )
+
+                _mode = "image→video" if image else "text→video"
                 logger.info(
-                    "Video: trying '%s' model=%s prompt='%s'",
-                    slot.label, model, prompt[:60],
+                    "Video [%s]: trying '%s' model=%s prompt='%s'",
+                    _mode, slot.label, model, prompt[:60],
                 )
 
                 loop = asyncio.get_running_loop()
@@ -875,9 +896,7 @@ class VertexAIService:
                     None,
                     functools.partial(
                         client.models.generate_videos,
-                        model=model,
-                        prompt=prompt,
-                        config=config,
+                        **gen_kwargs,
                     ),
                 )
 

@@ -267,7 +267,8 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
     def _vk_get_settings_text(user_id: int) -> str:
         from bot.user_settings import (
             VIDEO_RESOLUTIONS as _VR, VIDEO_ASPECT_RATIOS as _VA,
-            video_supports_audio as _vsa,
+            video_supports_audio as _vsa, video_supports_image as _vsi,
+            get_video_resolutions_for_model as _gvrm,
         )
         s = get_user_settings(user_id)
         mid = s.get("model", "gemini-3.1-flash-image-preview")
@@ -277,10 +278,14 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         ml = mi.get("label", mid)
         cr = mi.get("credits", 3)
         has_audio = _vsa(mid)
-        has_image = mi.get("supports_image", False)
+        has_image = _vsi(mid)
         al = _VA.get(s.get("video_aspect_ratio", "16:9"), "16:9")
         d = s.get("video_duration", 8)
-        rl = _VR.get(s.get("video_resolution", "720p"), {}).get("label", s.get("video_resolution", "720p"))
+        res = s.get("video_resolution", "720p")
+        avail_res = _gvrm(mid)
+        if res not in avail_res:
+            res = "1080p"
+        rl = _VR.get(res, {}).get("label", res)
         au = s.get("video_audio", True)
         input_type = "текст + фото" if has_image else "только текст"
         lines = [
@@ -520,10 +525,11 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "vp_res":
-            from bot.user_settings import VIDEO_RESOLUTIONS
+            from bot.user_settings import VIDEO_RESOLUTIONS, get_video_resolutions_for_model as _gvrm2
             res = data.get("id", "720p")
-            if res in VIDEO_RESOLUTIONS:
-                settings = get_user_settings(uid)
+            settings = get_user_settings(uid)
+            avail = _gvrm2(settings.get("model", ""))
+            if res in VIDEO_RESOLUTIONS and res in avail:
                 settings["video_resolution"] = res
                 save_user_settings(uid)
             await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
@@ -915,14 +921,16 @@ async def _generate_and_send(
     _is_video = is_video_model(user_model)
 
     if _is_video and images:
-        model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
-        await bot.api.messages.send(
-            peer_id=peer_id, random_id=0,
-            message=f"🎬 Модель {model_label} — генерация видео по фото пока не поддерживается.\n\n"
-                    "Отправьте текстовое описание для генерации видео, "
-                    "или переключите модель на изображения в настройках.",
-        )
-        return
+        from bot.user_settings import video_supports_image as _vsi_check
+        if not _vsi_check(user_model):
+            model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
+            await bot.api.messages.send(
+                peer_id=peer_id, random_id=0,
+                message=f"🎬 Модель {model_label} принимает только текстовые запросы.\n\n"
+                        "Отправьте текстовое описание для генерации видео, "
+                        "или переключите модель на Veo 3.1 / Veo 3.1 Fast для генерации видео по фото.",
+            )
+            return
 
     if _is_video:
         credits_cost = get_video_credits_cost(user_model)
@@ -964,11 +972,14 @@ async def _generate_and_send(
     start_time = time.monotonic()
 
     if _is_video:
-        from bot.user_settings import video_supports_audio
+        from bot.user_settings import video_supports_audio, video_supports_image as _vsi2
         video_aspect = settings.get("video_aspect_ratio", "16:9")
         video_duration = settings.get("video_duration", 8)
         video_resolution = settings.get("video_resolution", "720p")
         video_audio = settings.get("video_audio", True) and video_supports_audio(user_model)
+        _ref_image: bytes | None = images[0] if images and _vsi2(user_model) else None
+        if _ref_image is not None:
+            video_duration = 8
 
         async def _do_generate() -> bytes:
             return await vertex_service.generate_video(
@@ -980,6 +991,7 @@ async def _generate_and_send(
                 generate_audio=video_audio,
                 user_id=uid,
                 username=f"vk:{uid}",
+                image=_ref_image,
             )
     else:
         async def _do_generate() -> bytes:

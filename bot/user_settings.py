@@ -66,27 +66,30 @@ AVAILABLE_MODELS: dict[str, dict[str, Any]] = {
     },
     "veo-3.1-generate-001": {
         "label": "🎬 Veo 3.1 (Видео)",
-        "desc": "Высокое качество видео, только текст",
+        "desc": "Высокое качество, текст+фото, 4K",
         "type": "video",
         "credits": 5,
         "supports_audio": False,
-        "supports_image": False,
+        "supports_image": True,
+        "supports_4k": True,
     },
     "veo-3.1-fast-generate-001": {
         "label": "⚡ Veo 3.1 Fast (Видео)",
-        "desc": "Быстрая генерация видео, только текст",
+        "desc": "Быстрая генерация, текст+фото, 4K",
         "type": "video",
         "credits": 3,
         "supports_audio": False,
-        "supports_image": False,
+        "supports_image": True,
+        "supports_4k": True,
     },
     "veo-3.1-lite-generate-001": {
         "label": "💡 Veo 3.1 Lite (Видео)",
-        "desc": "Экономичная генерация, аудио, только текст",
+        "desc": "Экономичная, аудио, только текст",
         "type": "video",
         "credits": 2,
         "supports_audio": True,
         "supports_image": False,
+        "supports_4k": False,
     },
 }
 
@@ -99,6 +102,7 @@ VIDEO_DURATIONS: dict[int, dict[str, str]] = {
 VIDEO_RESOLUTIONS: dict[str, dict[str, str]] = {
     "720p": {"label": "📺 720p (HD)", "desc": "Стандартное качество"},
     "1080p": {"label": "🖥 1080p (Full HD)", "desc": "Высокое качество"},
+    "4k": {"label": "📽 4K (Ultra HD)", "desc": "Максимальное качество (Preview)"},
 }
 
 VIDEO_ASPECT_RATIOS: dict[str, str] = {
@@ -125,6 +129,17 @@ def video_supports_audio(model_id: str) -> bool:
 def video_supports_image(model_id: str) -> bool:
     info = AVAILABLE_MODELS.get(model_id, {})
     return bool(info.get("supports_image", False))
+
+
+def video_supports_4k(model_id: str) -> bool:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return bool(info.get("supports_4k", False))
+
+
+def get_video_resolutions_for_model(model_id: str) -> dict[str, dict[str, str]]:
+    if video_supports_4k(model_id):
+        return VIDEO_RESOLUTIONS
+    return {k: v for k, v in VIDEO_RESOLUTIONS.items() if k != "4k"}
 
 RESOLUTIONS: dict[str, dict[str, Any]] = {
     "original": {

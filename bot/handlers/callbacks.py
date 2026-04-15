@@ -359,6 +359,12 @@ async def vp_set_resolution(callback: CallbackQuery) -> None:
         await callback.answer("Неизвестное разрешение")
         return
     settings = get_user_settings(uid)
+    from bot.user_settings import get_video_resolutions_for_model
+    model_id = settings.get("model", "")
+    avail = get_video_resolutions_for_model(model_id)
+    if res_id not in avail:
+        await callback.answer("Это разрешение недоступно для текущей модели")
+        return
     settings["video_resolution"] = res_id
     save_user_settings(uid)
     await callback.answer(f"Разрешение: {res_id}")

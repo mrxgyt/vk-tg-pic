@@ -228,13 +228,129 @@ async def handle_photo_prompt(
     user_model = settings.get("model", "gemini-3.1-flash-image-preview")
 
     if is_video_model(user_model):
+        from bot.user_settings import video_supports_image, video_supports_audio, get_video_credits_cost as _vcc
+        if not video_supports_image(user_model):
+            model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
+            await message.reply(
+                f"🎬 Модель <b>{model_label}</b> принимает только текстовые запросы.\n\n"
+                "Отправьте текстовое описание для генерации видео, "
+                "или переключите модель на <b>Veo 3.1 / Veo 3.1 Fast</b> для генерации видео по фото.",
+                parse_mode="HTML",
+            )
+            return
+
+        caption = _collect_caption(photo_messages)
+        if not caption:
+            await message.reply(
+                f"📷 Фото получено! Добавьте описание (подпись к фото) — "
+                "что должно происходить в видео.\n\n"
+                "Например: <i>Камера медленно облетает этот объект</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        credits_cost = _vcc(user_model)
+        if not has_credits(uid, credits_cost):
+            await message.reply(
+                "💳 <b>Недостаточно кредитов</b>\n\n"
+                f"Генерация видео стоит <b>{credits_cost} кредитов</b>.\n"
+                "Пополните баланс для продолжения.",
+                parse_mode="HTML",
+            )
+            return
+
+        bot_obj: Bot = message.bot  # type: ignore[assignment]
+        await _dismiss_menu(bot_obj, uid)
         model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
-        await message.reply(
-            f"🎬 Модель <b>{model_label}</b> — генерация видео по фото пока не поддерживается.\n\n"
-            "Отправьте текстовое описание для генерации видео, "
-            "или переключите модель на изображения в настройках.",
+        video_aspect = settings.get("video_aspect_ratio", "16:9")
+        video_resolution = settings.get("video_resolution", "720p")
+
+        base_text = (
+            f"🎬 <b>Генерирую видео по фото…</b>\n"
+            f"🤖 {model_label}\n"
+            f"📐 {video_aspect} • 8 сек • {video_resolution}\n"
+            f"<i>{caption[:100]}{'…' if len(caption) > 100 else ''}</i>"
+        )
+        processing_msg = await message.reply(
+            f"{base_text}\n\n◐ <b>Обработка — 0 сек.</b>",
             parse_mode="HTML",
         )
+        animator = ProgressAnimator(processing_msg, base_text)
+        animator.start()
+
+        _uname = message.from_user.username or message.from_user.first_name or ""
+
+        async def _do_img2vid() -> bytes:
+            all_photo_bytes = await _download_photos(bot_obj, photo_messages)
+            return await vertex_service.generate_video(
+                prompt=caption,
+                model=user_model,
+                aspect_ratio=video_aspect,
+                duration_seconds=8,
+                resolution=video_resolution,
+                generate_audio=False,
+                user_id=uid,
+                username=_uname,
+                image=all_photo_bytes[0],
+            )
+
+        gen_task = asyncio.create_task(_do_img2vid())
+        set_active_task(uid, gen_task)
+
+        try:
+            video_bytes = await gen_task
+            await animator.stop()
+            clear_active_task(uid)
+
+            vid_doc = BufferedInputFile(file=video_bytes, filename="video.mp4")
+            await message.reply_video(
+                video=vid_doc,
+                caption=f"✅ Видео по фото готово!\n<i>{caption[:200]}</i>",
+                parse_mode="HTML",
+            )
+            increment_generations(uid, message.from_user.first_name or "", platform="tg", credits_cost=credits_cost)
+            asyncio.create_task(log_generation(
+                image_bytes=video_bytes, prompt=caption, user_id=uid,
+                user_name=message.from_user.first_name or str(uid),
+                platform="tg", model=user_model,
+            ))
+            try:
+                await bot_obj.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)
+            except Exception:
+                pass
+
+        except asyncio.CancelledError:
+            await animator.stop()
+            clear_active_task(uid)
+            try:
+                await processing_msg.edit_text("⛔ <b>Генерация отменена.</b>", parse_mode="HTML")
+            except Exception:
+                pass
+        except SafetyFilterError as exc:
+            await animator.stop()
+            clear_active_task(uid)
+            await processing_msg.edit_text(
+                f"🚫 <b>Запрос заблокирован фильтрами безопасности</b>\n\n{exc.user_message}",
+                parse_mode="HTML",
+            )
+        except QuotaExceededError:
+            await animator.stop()
+            clear_active_task(uid)
+            current_name = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
+            await processing_msg.edit_text(
+                f"Модель <b>{current_name}</b> сейчас перегружена 😔\n\nПопробуйте через пару минут.",
+                parse_mode="HTML",
+                reply_markup=_suggest_switch_keyboard(user_model),
+            )
+        except Exception as exc:
+            await animator.stop()
+            clear_active_task(uid)
+            logger.exception("Error image→video '%s': %s", caption[:60], exc)
+            await processing_msg.edit_text(
+                "Не удалось сгенерировать видео по фото 😔\n\nПопробуйте ещё раз.",
+                parse_mode="HTML",
+                reply_markup=_suggest_switch_keyboard(user_model),
+            )
         return
 
     caption = _collect_caption(photo_messages)

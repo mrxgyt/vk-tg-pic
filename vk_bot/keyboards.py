@@ -5,7 +5,8 @@ from vkbottle import Keyboard, KeyboardButtonColor, Text, Callback
 from bot.user_settings import (
     get_user_settings, AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
     VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, is_video_model,
-    get_video_credits_cost, video_supports_audio,
+    get_video_credits_cost, video_supports_audio, video_supports_image,
+    get_video_resolutions_for_model,
 )
 from bot.keyboards import ASPECT_RATIOS
 
@@ -42,6 +43,9 @@ def get_settings_keyboard(user_id: int) -> str:
         res = settings.get("video_resolution", "720p")
         audio = settings.get("video_audio", True)
         has_audio = video_supports_audio(current_model)
+        avail_res = get_video_resolutions_for_model(current_model)
+        if res not in avail_res:
+            res = "1080p"
 
         for key, label in VIDEO_ASPECT_RATIOS.items():
             text = f"✅ {label}" if key == aspect else label
@@ -53,8 +57,8 @@ def get_settings_keyboard(user_id: int) -> str:
             kb.add(Callback(text, payload={"cmd": "vp_dur", "id": d}))
         kb.row()
 
-        for r in VIDEO_RESOLUTIONS:
-            r_label = r.upper() if r == "720p" else r
+        for r in avail_res:
+            r_label = avail_res[r].get("label", r).replace("📺 ", "").replace("🖥 ", "").replace("📽 ", "")
             text = f"✅ {r_label}" if r == res else r_label
             kb.add(Callback(text, payload={"cmd": "vp_res", "id": r}))
         kb.row()
@@ -164,12 +168,15 @@ def get_video_panel_text(user_id: int) -> str:
     model_label = model_info.get("label", model_id)
     credits = model_info.get("credits", 3)
     has_audio = video_supports_audio(model_id)
-    has_image = model_info.get("supports_image", False)
+    has_image = video_supports_image(model_id)
 
     aspect = settings.get("video_aspect_ratio", "16:9")
     aspect_label = VIDEO_ASPECT_RATIOS.get(aspect, aspect)
     dur = settings.get("video_duration", 8)
     res = settings.get("video_resolution", "720p")
+    avail_res = get_video_resolutions_for_model(model_id)
+    if res not in avail_res:
+        res = "1080p"
     res_info = VIDEO_RESOLUTIONS.get(res, {})
     res_label = res_info.get("label", res)
     audio = settings.get("video_audio", True)
@@ -204,6 +211,9 @@ def get_video_panel_keyboard(user_id: int) -> str:
     res = settings.get("video_resolution", "720p")
     audio = settings.get("video_audio", True)
     has_audio = video_supports_audio(model_id)
+    avail_res = get_video_resolutions_for_model(model_id)
+    if res not in avail_res:
+        res = "1080p"
 
     kb = Keyboard(inline=True)
 
@@ -217,8 +227,8 @@ def get_video_panel_keyboard(user_id: int) -> str:
         kb.add(Callback(text, payload={"cmd": "vp_dur", "id": d}))
     kb.row()
 
-    for r in VIDEO_RESOLUTIONS:
-        r_label = r.upper() if r == "720p" else r
+    for r in avail_res:
+        r_label = avail_res[r].get("label", r).replace("📺 ", "").replace("🖥 ", "").replace("📽 ", "")
         text = f"✅ {r_label}" if r == res else r_label
         kb.add(Callback(text, payload={"cmd": "vp_res", "id": r}))
     kb.row()
