@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +23,14 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = Path(os.getenv("SETTINGS_FILE", "telegram-bot/data/user_settings.json"))
 
-FREE_CREDITS = 20
+FREE_CREDITS = 5
 
 _PERSISTENT_KEYS = {
     "model", "send_mode", "resolution", "aspect_ratio", "thinking_level",
     "first_name", "generations_count", "platform",
     "credits", "blocked",
+    "video_duration", "video_resolution", "video_aspect_ratio",
+    "video_audio", "video_task",
 }
 
 user_settings: dict[int, dict[str, Any]] = {}
@@ -54,12 +57,143 @@ AVAILABLE_MODELS: dict[str, dict[str, Any]] = {
     "gemini-3.1-flash-image-preview": {
         "label": "⚡ Gemini 3.1 Flash Image",
         "desc": "Быстрая генерация, баланс цены и качества",
+        "type": "image",
     },
     "gemini-3-pro-image-preview": {
         "label": "🎯 Gemini 3 Pro Image",
         "desc": "Лучшее качество, сложные задачи",
+        "type": "image",
+    },
+    "veo-3.1-generate-001": {
+        "label": "🎬 Veo 3.1 (Видео)",
+        "desc": "Высокое качество, текст+фото, 4K",
+        "type": "video",
+        "credits": 5,
+        "supports_audio": False,
+        "supports_image": True,
+        "supports_4k": True,
+    },
+    "veo-3.1-fast-generate-001": {
+        "label": "⚡ Veo 3.1 Fast (Видео)",
+        "desc": "Быстрая генерация, текст+фото, 4K",
+        "type": "video",
+        "credits": 3,
+        "supports_audio": False,
+        "supports_image": True,
+        "supports_4k": True,
+    },
+    "veo-3.1-lite-generate-001": {
+        "label": "💡 Veo 3.1 Lite (Видео)",
+        "desc": "Экономичная, аудио, только текст",
+        "type": "video",
+        "credits": 2,
+        "supports_audio": True,
+        "supports_image": False,
+        "supports_4k": False,
     },
 }
+
+VIDEO_DURATIONS: dict[int, dict[str, str]] = {
+    4: {"label": "⏱ 4 секунды", "desc": "Короткий клип"},
+    6: {"label": "⏱ 6 секунд", "desc": "Средний клип"},
+    8: {"label": "⏱ 8 секунд", "desc": "Максимальный клип"},
+}
+
+VIDEO_RESOLUTIONS: dict[str, dict[str, str]] = {
+    "720p": {"label": "📺 720p (HD)", "desc": "Стандартное качество"},
+    "1080p": {"label": "🖥 1080p (Full HD)", "desc": "Высокое качество"},
+    "4k": {"label": "📽 4K (Ultra HD)", "desc": "Максимальное качество (Preview)"},
+}
+
+VIDEO_ASPECT_RATIOS: dict[str, str] = {
+    "16:9": "16:9 (Горизонтальный)",
+    "9:16": "9:16 (Вертикальный)",
+}
+
+VIDEO_TASKS: dict[str, dict[str, Any]] = {
+    "text-to-video": {
+        "label": "📝 Text-to-video",
+        "desc": "Генерация видео по текстовому описанию",
+        "input": "text",
+    },
+    "image-to-video": {
+        "label": "🖼 Image-to-video",
+        "desc": "Генерация видео по изображению + текст",
+        "input": "image",
+        "requires_image_support": True,
+    },
+    "video-extension": {
+        "label": "🔄 Video extension",
+        "desc": "Продление существующего видео",
+        "input": "video",
+        "coming_soon": True,
+    },
+    "ref-subject": {
+        "label": "👤 Reference-to-video (Subject)",
+        "desc": "Видео с сохранением субъекта из фото",
+        "input": "image",
+        "coming_soon": True,
+    },
+    "ref-style": {
+        "label": "🎨 Reference-to-video (Style)",
+        "desc": "Видео в стиле референсного изображения",
+        "input": "image",
+        "coming_soon": True,
+    },
+    "inpaint-insert": {
+        "label": "✏️ Video inpaint (Insert)",
+        "desc": "Вставка объекта в видео",
+        "input": "video",
+        "coming_soon": True,
+    },
+    "inpaint-remove": {
+        "label": "🗑 Video inpaint (Remove)",
+        "desc": "Удаление объекта из видео",
+        "input": "video",
+        "coming_soon": True,
+    },
+}
+
+
+def get_available_tasks_for_model(model_id: str) -> dict[str, dict[str, Any]]:
+    has_image = video_supports_image(model_id)
+    result = {}
+    for tid, tinfo in VIDEO_TASKS.items():
+        if tinfo.get("requires_image_support") and not has_image:
+            continue
+        result[tid] = tinfo
+    return result
+
+
+def is_video_model(model_id: str) -> bool:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return info.get("type") == "video"
+
+
+def get_video_credits_cost(model_id: str) -> int:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return info.get("credits", 3)
+
+
+def video_supports_audio(model_id: str) -> bool:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return bool(info.get("supports_audio", False))
+
+
+def video_supports_image(model_id: str) -> bool:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return bool(info.get("supports_image", False))
+
+
+def video_supports_4k(model_id: str) -> bool:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return bool(info.get("supports_4k", False))
+
+
+def get_video_resolutions_for_model(model_id: str) -> dict[str, dict[str, str]]:
+    if video_supports_4k(model_id):
+        return VIDEO_RESOLUTIONS
+    return {k: v for k, v in VIDEO_RESOLUTIONS.items() if k != "4k"}
 
 RESOLUTIONS: dict[str, dict[str, Any]] = {
     "original": {
@@ -127,10 +261,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "last_menu_chat_id": None,
     "credits": FREE_CREDITS,
     "blocked": False,
+    "video_duration": 8,
+    "video_resolution": "720p",
+    "video_aspect_ratio": "16:9",
+    "video_audio": True,
+    "video_task": "text-to-video",
 }
 
 
 def _save_to_disk() -> None:
+    """Save all users — used only at startup migration. Prefer _save_user() for single updates."""
     snapshot: dict[int, dict[str, Any]] = {
         uid: {k: v for k, v in s.items() if k in _PERSISTENT_KEYS}
         for uid, s in user_settings.items()
@@ -148,6 +288,19 @@ def _save_to_disk() -> None:
                     len(snapshot), SETTINGS_FILE, SETTINGS_FILE.stat().st_size)
     except Exception:
         logger.exception("Failed to save user settings to %s", SETTINGS_FILE)
+
+
+def _save_user(user_id: int) -> None:
+    """Save a single user — thread-safe, much faster than _save_to_disk()."""
+    s = user_settings.get(user_id)
+    if s is None:
+        return
+    data = {k: v for k, v in s.items() if k in _PERSISTENT_KEYS}
+    if _db.is_available():
+        _db.save_one_user(user_id, data)
+        return
+    # Fallback: full file save for non-DB mode
+    _save_to_disk()
 
 
 def _check_storage() -> None:
@@ -235,7 +388,7 @@ def get_user_settings(user_id: int) -> dict[str, Any]:
 
 
 def save_user_settings(user_id: int) -> None:
-    _save_to_disk()
+    _save_user(user_id)
 
 
 def increment_generations(
@@ -252,7 +405,7 @@ def increment_generations(
         s["first_name"] = first_name
     if platform and not s.get("platform"):
         s["platform"] = platform
-    _save_to_disk()
+    _save_user(user_id)
     return s["generations_count"]
 
 
@@ -267,14 +420,35 @@ def has_credits(user_id: int, required: int = 1) -> bool:
 def add_credits(user_id: int, amount: int) -> int:
     s = get_user_settings(user_id)
     s["credits"] = s.get("credits", 0) + amount
-    _save_to_disk()
+    _save_user(user_id)
     return s["credits"]
+
+
+def set_credits(user_id: int, amount: int) -> int:
+    s = get_user_settings(user_id)
+    s["credits"] = max(0, int(amount))
+    _save_user(user_id)
+    return s["credits"]
+
+
+def reset_generations(user_id: int) -> None:
+    s = get_user_settings(user_id)
+    s["generations_count"] = 0
+    _save_user(user_id)
+
+
+def delete_user(user_id: int) -> bool:
+    existed = user_id in user_settings
+    user_settings.pop(user_id, None)
+    # Remove from DB directly — faster and correct with multiple replicas
+    _db.delete_one_user(user_id)
+    return existed
 
 
 def set_blocked(user_id: int, blocked: bool) -> None:
     s = get_user_settings(user_id)
     s["blocked"] = blocked
-    _save_to_disk()
+    _save_user(user_id)
 
 
 def set_last_menu(user_id: int, chat_id: int, message_id: int) -> None:
@@ -292,3 +466,41 @@ def pop_last_menu(user_id: int) -> tuple[int, int] | None:
         s["last_menu_message_id"] = None
         return (chat_id, msg_id)
     return None
+
+
+# ── Chat daily request limits ─────────────────────────────────────────────────
+# uid → (count_today, date_of_count)
+_chat_daily: dict[int, tuple[int, date]] = {}
+
+CHAT_MAX_PER_DAY = 500
+
+
+def get_chat_daily_limit(user_id: int) -> int:
+    """Daily chat request limit = min(user credits, CHAT_MAX_PER_DAY)."""
+    credits = get_user_settings(user_id).get("credits", FREE_CREDITS)
+    return min(credits, CHAT_MAX_PER_DAY)
+
+
+def get_chat_daily_count(user_id: int) -> int:
+    """Return how many chat requests the user has made today."""
+    entry = _chat_daily.get(user_id)
+    if entry is None or entry[1] != date.today():
+        return 0
+    return entry[0]
+
+
+def has_chat_quota(user_id: int) -> bool:
+    """True if the user can still send a chat message today."""
+    return get_chat_daily_count(user_id) < get_chat_daily_limit(user_id)
+
+
+def increment_chat_count(user_id: int) -> int:
+    """Record one chat request for today and return the new count."""
+    today = date.today()
+    entry = _chat_daily.get(user_id)
+    if entry is None or entry[1] != today:
+        count = 1
+    else:
+        count = entry[0] + 1
+    _chat_daily[user_id] = (count, today)
+    return count

@@ -1,7 +1,17 @@
 import asyncio
+import datetime
 import logging
 import os
 import sys
+
+
+class _MskFormatter(logging.Formatter):
+    """Logging formatter that shows Moscow time (UTC+3) instead of UTC."""
+    _MSK = datetime.timezone(datetime.timedelta(hours=3))
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.datetime.fromtimestamp(record.created, tz=self._MSK)
+        return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
 
 
 def _block_adc() -> None:
@@ -20,15 +30,19 @@ def _block_adc() -> None:
 _block_adc()
 
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, log_level, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(_MskFormatter(
+    fmt="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    stream=sys.stdout,
-)
+))
+_root = logging.getLogger()
+_root.setLevel(getattr(logging, log_level, logging.INFO))
+_root.addHandler(_handler)
 logging.getLogger("aiogram").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logging.getLogger("vkbottle").setLevel(logging.WARNING)
+logging.getLogger("google_genai").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger("start_all")
 
@@ -54,6 +68,10 @@ async def run_telegram(vertex_service):
         token=tg_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+
+    from bot.notify import set_bot
+    set_bot(bot)
+
     dp = Dispatcher()
     dp.update.outer_middleware(LoggingMiddleware())
     dp.message.middleware(AlbumMiddleware())
@@ -95,6 +113,9 @@ async def run_vk(vertex_service):
             logger.exception("VK bot error")
         finally:
             loop.close()
+            # Close this thread's own DB connection cleanly
+            from bot.db import _close_conn as _db_close
+            _db_close()
             logger.info("VK bot stopped.")
 
     thread = threading.Thread(target=_run_vk_in_thread, daemon=True, name="vk-bot")
@@ -129,6 +150,10 @@ async def main():
 
     vertex_service = VertexAIService(settings)
 
+    # Give the admin panel access to live slot statuses
+    from bot.web_admin import set_vertex_service
+    set_vertex_service(vertex_service)
+
     tasks = []
 
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -140,6 +165,13 @@ async def main():
         tasks.append(asyncio.create_task(run_vk(vertex_service)))
 
     tasks.append(asyncio.create_task(web_server()))
+
+    # Autopub scheduler
+    try:
+        from bot.autopub.scheduler import autopub_loop
+        tasks.append(asyncio.create_task(autopub_loop(vertex_service)))
+    except ImportError as _e:
+        logger.warning("autopub module not available, skipping scheduler: %s", _e)
 
     if not tasks:
         logger.error("No bot tokens set — set TELEGRAM_BOT_TOKEN and/or VK_BOT_TOKEN")

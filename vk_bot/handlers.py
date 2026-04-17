@@ -16,6 +16,9 @@ from bot.user_settings import (
     get_user_settings, save_user_settings, increment_generations,
     AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
     is_blocked, has_credits, FREE_CREDITS,
+    has_chat_quota, increment_chat_count,
+    get_chat_daily_count, get_chat_daily_limit,
+    is_video_model, get_video_credits_cost,
 )
 from bot.keyboards import ASPECT_RATIOS
 from core.exceptions import BotError, QuotaExceededError, SafetyFilterError
@@ -24,11 +27,10 @@ from vk_bot.keyboards import (
     get_persistent_keyboard,
     get_settings_keyboard,
     get_switch_model_keyboard,
-    get_creative_prompt_keyboard,
-    get_creative_auto_keyboard,
     get_balance_keyboard,
 )
 from vk_bot.photo_upload import upload_photo_to_vk, upload_document_to_vk, download_vk_photo
+from bot.log_channel import log_generation_vk
 
 logger = logging.getLogger(__name__)
 
@@ -108,13 +110,11 @@ class VKProgressAnimator:
 MENU_TEXTS = {"📋 меню", "📋 Меню", "меню", "menu"}
 SETTINGS_TEXTS = {"⚙️ настройки", "⚙️ Настройки", "настройки", "settings"}
 STOP_TEXTS = {"⛔ стоп", "⛔ Стоп", "стоп", "stop", "отмена", "cancel"}
-IDEAS_TEXTS = {"💡 идеи", "💡 Идеи", "идеи"}
+CHAT_TEXTS = {"💬 чат", "💬 Чат", "чат"}
 BALANCE_TEXTS = {"💰 баланс", "💰 Баланс", "баланс", "balance"}
-RESERVED_TEXTS = MENU_TEXTS | SETTINGS_TEXTS | STOP_TEXTS | IDEAS_TEXTS | BALANCE_TEXTS
+RESERVED_TEXTS = MENU_TEXTS | SETTINGS_TEXTS | STOP_TEXTS | CHAT_TEXTS | BALANCE_TEXTS
 
-_creative_sessions: dict[int, list[dict[str, Any]]] = {}
-_creative_prompts: dict[int, str] = {}
-_creative_msg_counts: dict[int, int] = {}
+_chat_sessions: dict[int, list[dict[str, Any]]] = {}
 
 active_tasks: dict[int, asyncio.Task] = {}
 
@@ -154,58 +154,50 @@ def _upscale_image(image_bytes: bytes, max_side: int) -> bytes:
     return buf.getvalue()
 
 
-SYSTEM_PROMPT = (
-    "Ты — креативный ассистент по созданию изображений. Твоя задача — помочь "
-    "пользователю придумать идеальный промпт для генерации изображения с помощью ИИ.\n\n"
-    "Правила:\n"
-    "1. Общайся на русском языке, дружелюбно и вдохновляюще.\n"
-    "2. Задавай вопросы по одному, чтобы уточнить идею.\n"
-    "3. Когда у тебя достаточно информации, предложи итоговый промпт.\n"
-    "4. Итоговый промпт оформи СТРОГО в таком формате:\n"
-    "---PROMPT---\n"
-    "тут детальный промпт на английском языке\n"
-    "---END---\n"
-    "5. После промпта объясни что он содержит и спроси подтверждение.\n"
-    "6. Отвечай кратко — не более 3-4 предложений за раз."
-)
 
-PROMPT_MARKER_START = "---PROMPT---"
-PROMPT_MARKER_END = "---END---"
+_SUPPORTED_IMAGE_MIMES = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
+_SUPPORTED_AUDIO_MIMES = {
+    "audio/x-aac", "audio/flac", "audio/mp3", "audio/m4a", "audio/mpeg",
+    "audio/mpga", "audio/mp4", "audio/ogg", "audio/pcm", "audio/wav", "audio/webm",
+}
+_SUPPORTED_DOC_MIMES = {"application/pdf", "text/plain"}
+_ALL_SUPPORTED_MIMES = _SUPPORTED_IMAGE_MIMES | _SUPPORTED_AUDIO_MIMES | _SUPPORTED_DOC_MIMES
+
+_MIME_ALIASES: dict[str, str] = {
+    "audio/x-opus+ogg": "audio/ogg",
+    "audio/opus": "audio/ogg",
+    "image/jpg": "image/jpeg",
+}
 
 
-def _extract_prompt(text: str) -> str | None:
-    if PROMPT_MARKER_START not in text:
+def _normalize_mime_vk(mime: str | None) -> str | None:
+    if not mime:
         return None
-    start = text.index(PROMPT_MARKER_START) + len(PROMPT_MARKER_START)
-    end = text.index(PROMPT_MARKER_END) if PROMPT_MARKER_END in text else len(text)
-    prompt = text[start:end].strip()
-    return prompt if prompt else None
+    mime = _MIME_ALIASES.get(mime, mime)
+    return mime if mime in _ALL_SUPPORTED_MIMES else None
 
 
-def _clean_for_display(text: str) -> str:
-    result = text
-    if PROMPT_MARKER_START in result:
-        start = result.index(PROMPT_MARKER_START)
-        end_marker = PROMPT_MARKER_END
-        if end_marker in result:
-            end = result.index(end_marker) + len(end_marker)
-        else:
-            end = len(result)
-        prompt_block = result[start:end]
-        result = result.replace(prompt_block, "").strip()
-    return result
+async def _download_url(url: str) -> bytes:
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            return await resp.read()
 
 
-def _build_contents(history: list[dict[str, Any]]) -> list[Any]:
+def _build_chat_api_contents(history: list[dict[str, Any]]) -> list[Any]:
     from google.genai import types as genai_types
     contents = []
     for msg in history:
-        contents.append(
-            genai_types.Content(
-                role=msg["role"],
-                parts=[genai_types.Part.from_text(text=msg["text"])],
-            )
-        )
+        api_parts = []
+        for part in msg["parts"]:
+            if part["type"] == "text":
+                api_parts.append(genai_types.Part.from_text(text=part["text"]))
+            elif part["type"] == "media":
+                api_parts.append(
+                    genai_types.Part.from_bytes(data=part["data"], mime_type=part["mime_type"])
+                )
+        if api_parts:
+            contents.append(genai_types.Content(role=msg["role"], parts=api_parts))
     return contents
 
 
@@ -272,11 +264,55 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             keyboard=get_persistent_keyboard(),
         )
 
+    def _vk_get_settings_text(user_id: int) -> str:
+        from bot.user_settings import (
+            VIDEO_RESOLUTIONS as _VR, VIDEO_ASPECT_RATIOS as _VA,
+            video_supports_audio as _vsa, video_supports_image as _vsi,
+            get_video_resolutions_for_model as _gvrm,
+        )
+        s = get_user_settings(user_id)
+        mid = s.get("model", "gemini-3.1-flash-image-preview")
+        if not is_video_model(mid):
+            return "⚙️ Настройки\n\nВыберите что изменить:"
+        mi = AVAILABLE_MODELS.get(mid, {})
+        ml = mi.get("label", mid)
+        cr = mi.get("credits", 3)
+        has_audio = _vsa(mid)
+        has_image = _vsi(mid)
+        al = _VA.get(s.get("video_aspect_ratio", "16:9"), "16:9")
+        d = s.get("video_duration", 8)
+        res = s.get("video_resolution", "720p")
+        avail_res = _gvrm(mid)
+        if res not in avail_res:
+            res = "1080p"
+        rl = _VR.get(res, {}).get("label", res)
+        au = s.get("video_audio", True)
+        input_type = "текст + фото" if has_image else "только текст"
+        lines = [
+            f"⚙️ Настройки — {ml}",
+            "",
+            "┌─────────────────────",
+            f"│ 📐 Формат: {al}",
+            f"│ ⏱ Длительность: {d} сек",
+            f"│ 📺 Разрешение: {rl}",
+        ]
+        if has_audio:
+            lines.append(f"│ 🔊 Аудио: {'Вкл' if au else 'Выкл'}")
+        lines += [
+            "├─────────────────────",
+            f"│ 💰 Стоимость: {cr} кр.",
+            f"│ 📋 24 FPS • MP4 • {input_type}",
+            "└─────────────────────",
+            "",
+            "Нажмите на параметр чтобы изменить:",
+        ]
+        return "\n".join(lines)
+
     @bot.on.message(text=list(SETTINGS_TEXTS))
     async def cmd_settings(message: Message):
         uid = message.from_id
         await message.answer(
-            "⚙️ Настройки\n\nВыберите что изменить:",
+            _vk_get_settings_text(uid),
             keyboard=get_settings_keyboard(uid),
         )
 
@@ -288,14 +324,13 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         if task and not task.done():
             task.cancel()
             cancelled = True
-        was_creative = uid in _creative_sessions
-        _creative_sessions.pop(uid, None)
-        _creative_prompts.pop(uid, None)
+        was_chat = uid in _chat_sessions
+        _chat_sessions.pop(uid, None)
 
-        if cancelled or was_creative:
+        if cancelled or was_chat:
             text = "⛔ Отменено.\n\nОтправьте новый промпт или откройте меню."
-            if was_creative:
-                text = "⛔ Режим «Идеи» завершён.\n\nОтправьте промпт или начните заново."
+            if was_chat:
+                text = "⛔ Чат завершён.\n\nОтправьте промпт для генерации или начните чат заново."
             await message.answer(text)
         else:
             await message.answer("ℹ️ Нет активной генерации для отмены.")
@@ -306,21 +341,34 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         settings = get_user_settings(uid)
         credits = settings.get("credits", FREE_CREDITS)
         generations = settings.get("generations_count", 0)
+        chat_used = get_chat_daily_count(uid)
+        chat_limit = get_chat_daily_limit(uid)
 
         purchased = max(0, credits - FREE_CREDITS) if credits > FREE_CREDITS else 0
         free_left = min(credits, FREE_CREDITS)
 
-        text = "💰 Ваш баланс\n\n"
-        text += f"🔋 Всего кредитов: {credits}\n"
+        lines = ["💰 Ваш баланс", ""]
+        lines.append("┌─────────────────────")
+        lines.append(f"│ 🔋 Кредитов: {credits}")
         if purchased > 0:
-            text += f"💎 Купленные: {purchased}\n"
-            text += f"🎁 Бесплатные: {free_left}\n"
+            lines.append(f"│ 💎 Купленные: {purchased}")
+            lines.append(f"│ 🎁 Бесплатные: {free_left}")
         else:
-            text += f"🎁 Бесплатные: {free_left} из {FREE_CREDITS}\n"
-        text += f"🎨 Сгенерировано: {generations}\n\n"
-        text += "Выберите пакет для пополнения:"
+            lines.append(f"│ 🎁 Бесплатные: {free_left} из {FREE_CREDITS}")
+        lines.append(f"│ 🎨 Сгенерировано: {generations}")
+        lines.append("└─────────────────────")
+        lines.append("")
+        lines.append("📋 Стоимость генерации:")
+        lines.append("▫️ Фото 2К, Full HD и ниже — 1 кредит")
+        lines.append("▫️ Фото 4K — 2 кредита")
+        lines.append("")
+        lines.append("💬 Чат с ИИ (в день):")
+        lines.append(f"▫️ Использовано: {chat_used} из {chat_limit}")
+        lines.append(f"▫️ Дневной лимит: {chat_limit} запросов")
+        lines.append("")
+        lines.append("💳 Выберите пакет для пополнения:")
 
-        await message.answer(text, keyboard=get_balance_keyboard())
+        await message.answer("\n".join(lines), keyboard=get_balance_keyboard())
 
     @bot.on.message(text=["/info", "info", "Info", "📁 Документы"])
     async def cmd_info(message: Message):
@@ -335,19 +383,17 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         )
         await message.answer(text)
 
-    @bot.on.message(text=list(IDEAS_TEXTS))
-    async def cmd_ideas(message: Message):
+    @bot.on.message(text=list(CHAT_TEXTS))
+    async def cmd_chat(message: Message):
         uid = message.from_id
-        _creative_sessions[uid] = [
-            {"role": "user", "text": SYSTEM_PROMPT + "\n\nПривет! Помоги мне придумать изображение."},
-        ]
-        _creative_prompts.pop(uid, None)
-        _creative_msg_counts[uid] = 0
+        _chat_sessions[uid] = []
         await message.answer(
-            "💡 Режим «Идеи»\n\n"
-            "Я помогу придумать идеальное изображение! "
-            "Расскажите, что вы хотите создать — я буду задавать вопросы.\n\n"
-            "Для выхода нажмите ⛔ Стоп"
+            "💬 Чат с Gemini 3.1 Pro\n\n"
+            "🧠 Анализирую текст, код, фото, видео, аудио и документы\n"
+            "🌍 Отвечаю на любом языке\n"
+            "📎 Разбираю PDF и файлы\n"
+            "🎯 Решаю задачи, объясняю, генерирую идеи\n\n"
+            "Для выхода — ⛔ Стоп",
         )
 
     @bot.on.raw_event(GroupEventType.MESSAGE_EVENT, dataclass=dict)
@@ -375,7 +421,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             await _vk_safe_edit(bot.api, **kwargs)
 
         if cmd == "back_settings":
-            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "choose_model":
             from vk_bot.keyboards import get_model_keyboard
@@ -390,7 +436,7 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 settings = get_user_settings(uid)
                 settings["model"] = model_id
                 save_user_settings(uid)
-            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
 
         elif cmd == "choose_aspect":
             from vk_bot.keyboards import get_aspect_ratio_keyboard
@@ -454,6 +500,124 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 save_user_settings(uid)
             await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
 
+        elif cmd == "noop":
+            pass
+
+        elif cmd == "open_video_panel":
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
+
+        elif cmd == "vp_aspect":
+            from bot.user_settings import VIDEO_ASPECT_RATIOS
+            key = data.get("id", "16:9")
+            if key in VIDEO_ASPECT_RATIOS:
+                settings = get_user_settings(uid)
+                settings["video_aspect_ratio"] = key
+                save_user_settings(uid)
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
+
+        elif cmd == "vp_dur":
+            from bot.user_settings import VIDEO_DURATIONS
+            dur = data.get("id", 8)
+            if dur in VIDEO_DURATIONS:
+                settings = get_user_settings(uid)
+                settings["video_duration"] = dur
+                save_user_settings(uid)
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
+
+        elif cmd == "vp_res":
+            from bot.user_settings import VIDEO_RESOLUTIONS, get_video_resolutions_for_model as _gvrm2
+            res = data.get("id", "720p")
+            settings = get_user_settings(uid)
+            avail = _gvrm2(settings.get("model", ""))
+            if res in VIDEO_RESOLUTIONS and res in avail:
+                settings["video_resolution"] = res
+                save_user_settings(uid)
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
+
+        elif cmd == "vp_audio":
+            settings = get_user_settings(uid)
+            from bot.user_settings import video_supports_audio as _vsa2
+            model_id = settings.get("model", "")
+            if _vsa2(model_id):
+                settings["video_audio"] = not settings.get("video_audio", True)
+                save_user_settings(uid)
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
+
+        elif cmd == "choose_vtask":
+            from vk_bot.keyboards import get_video_task_keyboard
+            from bot.user_settings import VIDEO_TASKS as _VT, get_available_tasks_for_model as _gatm
+            settings = get_user_settings(uid)
+            model_id = settings.get("model", "")
+            avail = _gatm(model_id)
+            lines = ["🎯 Тип задачи:\n"]
+            for tid, tinfo in avail.items():
+                suffix = " (скоро)" if tinfo.get("coming_soon") else ""
+                lines.append(f"  {tinfo['label']}{suffix}\n  {tinfo['desc']}\n")
+            await edit_msg("\n".join(lines), get_video_task_keyboard(uid))
+
+        elif cmd == "set_vtask":
+            from bot.user_settings import VIDEO_TASKS as _VT2, get_available_tasks_for_model as _gatm2
+            task_id = data.get("id", "text-to-video")
+            if task_id in _VT2 and not _VT2[task_id].get("coming_soon"):
+                settings = get_user_settings(uid)
+                model_id = settings.get("model", "")
+                avail = _gatm2(model_id)
+                if task_id in avail:
+                    settings["video_task"] = task_id
+                    save_user_settings(uid)
+            await edit_msg(_vk_get_settings_text(uid), get_settings_keyboard(uid))
+
+        elif cmd == "choose_video_duration":
+            from vk_bot.keyboards import get_video_duration_keyboard
+            from bot.user_settings import VIDEO_DURATIONS
+            lines = ["⏱ Длительность видео:\n"]
+            for dur, info in VIDEO_DURATIONS.items():
+                lines.append(f"  {info['label']}\n")
+            await edit_msg("\n".join(lines), get_video_duration_keyboard(uid))
+
+        elif cmd == "set_video_duration":
+            from bot.user_settings import VIDEO_DURATIONS
+            dur = data.get("id", 8)
+            if dur in VIDEO_DURATIONS:
+                settings = get_user_settings(uid)
+                settings["video_duration"] = dur
+                save_user_settings(uid)
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+
+        elif cmd == "choose_video_resolution":
+            from vk_bot.keyboards import get_video_resolution_keyboard
+            from bot.user_settings import VIDEO_RESOLUTIONS
+            lines = ["📺 Разрешение видео:\n"]
+            for res, info in VIDEO_RESOLUTIONS.items():
+                lines.append(f"  {info['label']}\n")
+            await edit_msg("\n".join(lines), get_video_resolution_keyboard(uid))
+
+        elif cmd == "set_video_resolution":
+            from bot.user_settings import VIDEO_RESOLUTIONS
+            res = data.get("id", "720p")
+            if res in VIDEO_RESOLUTIONS:
+                settings = get_user_settings(uid)
+                settings["video_resolution"] = res
+                save_user_settings(uid)
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+
+        elif cmd == "choose_video_aspect":
+            from vk_bot.keyboards import get_video_aspect_keyboard
+            from bot.user_settings import VIDEO_ASPECT_RATIOS
+            lines = ["📐 Соотношение сторон видео:\n"]
+            for ratio, label in VIDEO_ASPECT_RATIOS.items():
+                lines.append(f"  {label}\n")
+            await edit_msg("\n".join(lines), get_video_aspect_keyboard(uid))
+
+        elif cmd == "set_video_aspect":
+            from bot.user_settings import VIDEO_ASPECT_RATIOS
+            ratio = data.get("id", "16:9")
+            if ratio in VIDEO_ASPECT_RATIOS:
+                settings = get_user_settings(uid)
+                settings["video_aspect_ratio"] = ratio
+                save_user_settings(uid)
+            await edit_msg("⚙️ Настройки\n\nВыберите что изменить:", get_settings_keyboard(uid))
+
         elif cmd == "switch_model":
             model_id = data.get("id", "")
             if model_id in AVAILABLE_MODELS:
@@ -464,13 +628,13 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
                 await edit_msg(f"✅ Модель переключена на {info['label']}\n\nОтправьте запрос ещё раз.")
 
         elif cmd == "buy":
-            from bot.services.freekassa_service import create_payment_url, CREDIT_PACKAGES as FK_PACKAGES
+            from bot.services.lava_service import create_payment_url, CREDIT_PACKAGES as LAVA_PACKAGES
             pack_key = data.get("pack", "")
-            pack = FK_PACKAGES.get(pack_key)
+            pack = LAVA_PACKAGES.get(pack_key)
             if not pack:
                 await edit_msg("Неизвестный пакет.")
                 return
-            result = create_payment_url(uid, pack_key)
+            result = await create_payment_url(uid, pack_key, source="vk")
             if result["ok"]:
                 await edit_msg(
                     f"💳 Оплата: {pack['label']}\n\n"
@@ -480,58 +644,9 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
             else:
                 await edit_msg(f"Ошибка: {result.get('error', 'неизвестная')}")
 
-        elif cmd == "creative_generate":
-            prompt = _creative_prompts.pop(uid, None)
-            if not prompt:
-                await edit_msg("Промпт не найден, начните заново.")
-                return
-            _creative_sessions.pop(uid, None)
-            _creative_msg_counts.pop(uid, None)
-            await _generate_and_send(bot, vertex_service, uid, peer_id, prompt)
-
-        elif cmd == "creative_edit":
-            _creative_prompts.pop(uid, None)
-            if uid in _creative_sessions and _creative_sessions[uid]:
-                _creative_sessions[uid].append({
-                    "role": "user",
-                    "text": "Давай изменим промпт. Что ты предлагаешь улучшить?",
-                })
-            await edit_msg("✏️ Хорошо! Расскажите, что хотите изменить.")
-
-        elif cmd == "creative_cancel":
-            _creative_sessions.pop(uid, None)
-            _creative_prompts.pop(uid, None)
-            await edit_msg("❌ Режим «Идеи» завершён.\n\nМожете отправить промпт напрямую.", get_persistent_keyboard())
-
-        elif cmd == "creative_auto":
-            if uid not in _creative_sessions:
-                await edit_msg("Сессия не найдена, начните заново.")
-                return
-            history = _creative_sessions[uid]
-            history.append({
-                "role": "user",
-                "text": "Достаточно вопросов! Додумай остальные детали сам и сразу "
-                        "выдай итоговый промпт в формате ---PROMPT--- ... ---END---",
-            })
-            await edit_msg("🪄 Дополняю и создаю промпт...")
-            try:
-                contents = _build_contents(history)
-                response = await vertex_service.chat_text(contents)
-                if not response:
-                    await edit_msg("Не удалось получить ответ, попробуйте ещё раз.")
-                    return
-                history.append({"role": "model", "text": response})
-                extracted = _extract_prompt(response)
-                if extracted:
-                    _creative_prompts[uid] = extracted
-                    display_text = _clean_for_display(response)
-                    prompt_preview = f"\n\nПромпт:\n{extracted[:500]}"
-                    await edit_msg(f"{display_text}{prompt_preview}", get_creative_prompt_keyboard())
-                else:
-                    await edit_msg(response)
-            except Exception as exc:
-                logger.exception("Creative auto error: %s", exc)
-                await edit_msg("Произошла ошибка, попробуйте ещё раз.")
+        elif cmd == "chat_cancel":
+            _chat_sessions.pop(uid, None)
+            await edit_msg("❌ Чат завершён.\n\nМожете отправить промпт для генерации изображения.", get_persistent_keyboard())
 
     @bot.on.message()
     async def handle_text(message: Message):
@@ -545,8 +660,8 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         if text.startswith("/"):
             return
 
-        if uid in _creative_sessions:
-            await _handle_creative_chat(bot, vertex_service, uid, peer_id, text)
+        if uid in _chat_sessions:
+            await _handle_vk_chat_message(bot, vertex_service, uid, peer_id, message)
             return
 
         if message.attachments:
@@ -572,65 +687,245 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         await _generate_and_send(bot, vertex_service, uid, peer_id, text)
 
 
-async def _handle_creative_chat(
+def _clean_latex(text: str) -> str:
+    """Convert LaTeX math notation to readable Unicode."""
+    for _ in range(4):
+        text = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}', r'(\1/\2)', text)
+    text = re.sub(r'\\sqrt\{([^{}]+)\}', r'√\1', text)
+    text = re.sub(r'\\sqrt', '√', text)
+    for cmd in (r'\\text', r'\\mathrm', r'\\mathbf', r'\\mathit', r'\\mathbb'):
+        text = re.sub(cmd + r'\{([^}]*)\}', r'\1', text)
+    _sup = {'0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹',
+            '+':'⁺','-':'⁻','n':'ⁿ','i':'ⁱ','T':'ᵀ','a':'ᵃ','b':'ᵇ'}
+    text = re.sub(r'\^\{([^{}]+)\}', lambda m: ''.join(_sup.get(c, c) for c in m.group(1)), text)
+    text = re.sub(r'\^([0-9nix])', lambda m: _sup.get(m.group(1), m.group(1)), text)
+    _sub = {'0':'₀','1':'₁','2':'₂','3':'₃','4':'₄','5':'₅','6':'₆','7':'₇','8':'₈','9':'₉',
+            '+':'₊','-':'₋','n':'ₙ','i':'ᵢ','k':'ₖ'}
+    text = re.sub(r'_\{([^{}]+)\}', lambda m: ''.join(_sub.get(c, c) for c in m.group(1)), text)
+    text = re.sub(r'_([0-9nk])', lambda m: _sub.get(m.group(1), m.group(1)), text)
+    _syms = [
+        (r'\\approx', '≈'), (r'\\cdot', '·'), (r'\\times', '×'), (r'\\div', '÷'),
+        (r'\\pm', '±'), (r'\\mp', '∓'), (r'\\leq', '≤'), (r'\\geq', '≥'),
+        (r'\\neq', '≠'), (r'\\ne', '≠'), (r'\\infty', '∞'),
+        (r'\\implies', '⟹'), (r'\\Rightarrow', '⟹'), (r'\\rightarrow', '→'),
+        (r'\\leftarrow', '←'), (r'\\pi', 'π'), (r'\\alpha', 'α'), (r'\\beta', 'β'),
+        (r'\\gamma', 'γ'), (r'\\delta', 'δ'), (r'\\Delta', 'Δ'), (r'\\theta', 'θ'),
+        (r'\\lambda', 'λ'), (r'\\mu', 'μ'), (r'\\sigma', 'σ'), (r'\\Sigma', 'Σ'),
+        (r'\\phi', 'φ'), (r'\\omega', 'ω'), (r'\\Omega', 'Ω'), (r'\\rho', 'ρ'),
+        (r'\\epsilon', 'ε'), (r'\\eta', 'η'), (r'\\tau', 'τ'), (r'\\partial', '∂'),
+        (r'\\nabla', '∇'), (r'\\forall', '∀'), (r'\\exists', '∃'),
+        (r'\\in', '∈'), (r'\\notin', '∉'), (r'\\ldots', '…'), (r'\\cdots', '⋯'),
+        (r'\\left\(', '('), (r'\\right\)', ')'), (r'\\left\[', '['), (r'\\right\]', ']'),
+        (r'\\left', ''), (r'\\right', ''), (r'\\langle', '⟨'), (r'\\rangle', '⟩'),
+    ]
+    for pat, sym in _syms:
+        text = re.sub(pat, sym, text)
+    text = re.sub(r'\\[a-zA-Z]+\*?', '', text)
+    text = re.sub(r'\$\$(.+?)\$\$', r'\1', text, flags=re.DOTALL)
+    text = re.sub(r'\$(.+?)\$', r'\1', text)
+    text = text.replace('{', '').replace('}', '')
+    text = re.sub(r'  +', ' ', text)
+    return text
+
+
+def _strip_md(text: str) -> str:
+    """Strip Markdown formatting and LaTeX for plain-text VK messages."""
+    # LaTeX math → Unicode first
+    text = _clean_latex(text)
+    # Code blocks → keep content only
+    text = re.sub(r"```(?:[^\n`]*)?\n?(.*?)```", lambda m: m.group(1).strip(), text, flags=re.DOTALL)
+    # Inline code → keep content
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    # Headings
+    text = re.sub(r"^#{1,6} ", "", text, flags=re.MULTILINE)
+    # Bold **text** or __text__
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"__(.+?)__", r"\1", text, flags=re.DOTALL)
+    # Italic *text* or _text_
+    text = re.sub(r"\*([^*\n]+?)\*", r"\1", text)
+    text = re.sub(r"_([^_\n]+?)_", r"\1", text)
+    # Bullet points * item / - item → • item
+    text = re.sub(r"^[*\-] ", "• ", text, flags=re.MULTILINE)
+    return text.strip()
+
+
+_THINKING_FRAMES = ["💭 Думаю.", "💭 Думаю..", "💭 Думаю..."]
+
+
+async def _animate_thinking_vk(
+    bot: Bot, peer_id: int, message_id: int, stop: asyncio.Event
+) -> None:
+    i = 1
+    while not stop.is_set():
+        await asyncio.sleep(3)
+        if stop.is_set():
+            break
+        try:
+            await bot.api.messages.edit(
+                peer_id=peer_id,
+                message_id=message_id,
+                message=_THINKING_FRAMES[i % 3],
+            )
+        except Exception:
+            pass
+        i += 1
+
+
+async def _handle_vk_chat_message(
     bot: Bot, vertex_service: VertexAIService,
-    uid: int, peer_id: int, text: str,
+    uid: int, peer_id: int, message: Any,
 ):
-    history = _creative_sessions[uid]
-    history.append({"role": "user", "text": text})
-    _creative_msg_counts[uid] = _creative_msg_counts.get(uid, 0) + 1
+    if not has_chat_quota(uid):
+        limit = get_chat_daily_limit(uid)
+        await bot.api.messages.send(
+            peer_id=peer_id, random_id=0,
+            message=(
+                f"⛔ Лимит чата на сегодня исчерпан ({limit} запросов).\n\n"
+                "Лимит сбрасывается каждую ночь в 00:00. "
+                "Пополните баланс чтобы увеличить дневной лимит."
+            ),
+        )
+        return
+
+    history = _chat_sessions[uid]
+    text = (message.text or "").strip()
+
+    parts: list[dict] = []
+    if text:
+        parts.append({"type": "text", "text": text})
+
+    if message.attachments:
+        for att in message.attachments:
+            if att.photo:
+                try:
+                    photo_bytes = await download_vk_photo(bot.api, att.photo.sizes)
+                    parts.append({"type": "media", "data": photo_bytes, "mime_type": "image/jpeg"})
+                except Exception as e:
+                    logger.warning("VK photo download failed in chat: %s", e)
+                    parts.append({"type": "text", "text": "[изображение — не удалось загрузить]"})
+            elif getattr(att, "audio_message", None):
+                am = att.audio_message
+                url = getattr(am, "link_ogg", None) or getattr(am, "link_mp3", None)
+                if url:
+                    try:
+                        audio_bytes = await _download_url(url)
+                        mime = "audio/ogg" if "ogg" in url else "audio/mpeg"
+                        parts.append({"type": "media", "data": audio_bytes, "mime_type": mime})
+                    except Exception as e:
+                        logger.warning("VK audio message download failed: %s", e)
+                        parts.append({"type": "text", "text": "[голосовое сообщение — не удалось загрузить]"})
+                else:
+                    parts.append({"type": "text", "text": "[голосовое сообщение]"})
+            elif getattr(att, "doc", None):
+                doc = att.doc
+                url = getattr(doc, "url", None)
+                raw_mime = getattr(doc, "mime_type", None) or ""
+                ext = getattr(doc, "ext", "") or ""
+                if not raw_mime and ext == "pdf":
+                    raw_mime = "application/pdf"
+                elif not raw_mime and ext in ("txt", "text"):
+                    raw_mime = "text/plain"
+                mime = _normalize_mime_vk(raw_mime)
+                fname = getattr(doc, "title", "") or f"document.{ext}"
+                if mime and url:
+                    try:
+                        doc_bytes = await _download_url(url)
+                        parts.append({"type": "media", "data": doc_bytes, "mime_type": mime})
+                        if not text:
+                            parts.insert(0, {"type": "text", "text": f"[документ: {fname}]"})
+                    except Exception as e:
+                        logger.warning("VK doc download failed: %s", e)
+                        parts.append({"type": "text", "text": f"[документ {fname} — не удалось загрузить]"})
+                else:
+                    parts.append({"type": "text", "text": f"[прикреплён файл: {fname} — формат не поддерживается]"})
+
+    if not parts:
+        await bot.api.messages.send(
+            peer_id=peer_id, random_id=0,
+            message="Не удалось разобрать сообщение. Попробуйте ещё раз.",
+        )
+        return
+
+    history.append({"role": "user", "parts": parts})
 
     thinking_id = await bot.api.messages.send(
         peer_id=peer_id, random_id=0,
-        message="💭 Думаю...",
+        message="💭 Думаю.",
+    )
+    stop_event = asyncio.Event()
+    anim_task = asyncio.create_task(
+        _animate_thinking_vk(bot, peer_id, thinking_id, stop_event)
     )
 
     try:
-        contents = _build_contents(history)
+        contents = _build_chat_api_contents(history)
         response = await vertex_service.chat_text(contents)
 
+        stop_event.set()
+        anim_task.cancel()
+
         if not response:
+            history.pop()
             await bot.api.messages.edit(
                 peer_id=peer_id, message_id=thinking_id,
                 message="Не удалось получить ответ, попробуйте ещё раз.",
             )
             return
 
-        history.append({"role": "model", "text": response})
-        extracted = _extract_prompt(response)
+        history.append({"role": "model", "parts": [{"type": "text", "text": response}]})
 
-        if extracted:
-            _creative_prompts[uid] = extracted
-            display_text = _clean_for_display(response)
-            prompt_preview = f"\n\nПромпт:\n{extracted[:500]}"
+        if len(history) > 42:
+            _chat_sessions[uid] = history[:2] + history[-40:]
+
+        increment_chat_count(uid)
+        cleaned = _strip_md(response)
+        vk_chunks: list[str] = []
+        tmp = cleaned
+        while len(tmp) > 4096:
+            split_at = tmp.rfind("\n", 0, 4096)
+            if split_at <= 0:
+                split_at = 4096
+            vk_chunks.append(tmp[:split_at].rstrip())
+            tmp = tmp[split_at:].lstrip()
+        vk_chunks.append(tmp)
+
+        try:
             await bot.api.messages.edit(
                 peer_id=peer_id, message_id=thinking_id,
-                message=f"{display_text}{prompt_preview}",
-                keyboard=get_creative_prompt_keyboard(),
+                message=vk_chunks[0],
             )
-        else:
-            keyboard = None
-            if _creative_msg_counts.get(uid, 0) >= 2:
-                keyboard = get_creative_auto_keyboard()
-            await bot.api.messages.edit(
-                peer_id=peer_id, message_id=thinking_id,
-                message=response,
-                keyboard=keyboard,
+        except Exception:
+            await bot.api.messages.send(
+                peer_id=peer_id, random_id=0,
+                message=vk_chunks[0],
             )
+        for chunk in vk_chunks[1:]:
+            await bot.api.messages.send(
+                peer_id=peer_id, random_id=0,
+                message=chunk,
+            )
+
     except Exception as exc:
-        logger.exception("Creative chat error: %s", exc)
+        stop_event.set()
+        anim_task.cancel()
+        logger.exception("VK chat error: %s", exc)
         err_text = str(exc).lower()
         if "429" in err_text or "quota" in err_text:
-            msg = "⏳ API ключи перегружены. Подождите пару минут."
+            msg = "⏳ API перегружен. Подождите пару минут."
         else:
-            msg = "Произошла ошибка, попробуйте ещё раз."
+            msg = "Произошла ошибка. Попробуйте ещё раз."
         try:
             await bot.api.messages.edit(
                 peer_id=peer_id, message_id=thinking_id,
                 message=msg,
             )
         except Exception:
-            pass
+            try:
+                await bot.api.messages.send(
+                    peer_id=peer_id, random_id=0, message=msg,
+                )
+            except Exception:
+                pass
 
 
 async def _generate_and_send(
@@ -646,30 +941,50 @@ async def _generate_and_send(
         return
 
     settings = get_user_settings(uid)
-    credits_cost = 2 if settings.get("resolution") == "4k" else 1
+    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
+    _is_video = is_video_model(user_model)
+
+    if _is_video and images:
+        from bot.user_settings import video_supports_image as _vsi_check
+        if not _vsi_check(user_model):
+            model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
+            await bot.api.messages.send(
+                peer_id=peer_id, random_id=0,
+                message=f"🎬 Модель {model_label} принимает только текстовые запросы.\n\n"
+                        "Отправьте текстовое описание для генерации видео, "
+                        "или переключите модель на Veo 3.1 / Veo 3.1 Fast для генерации видео по фото.",
+            )
+            return
+
+    if _is_video:
+        credits_cost = get_video_credits_cost(user_model)
+    else:
+        credits_cost = 2 if settings.get("resolution") == "4k" else 1
 
     if not has_credits(uid, credits_cost):
+        cost_label = f"{credits_cost} кредитов" if credits_cost > 1 else "1 кредит"
         msg = (
-            "💳 Кредиты закончились\n\n"
-            "У вас больше нет доступных генераций.\n"
-            "Для продолжения работы приобретите пополнение кредитов."
-            if credits_cost == 1 else
-            "💳 Недостаточно кредитов\n\n"
-            "Генерация в разрешении 4K стоит 2 кредита.\n"
-            "Понизьте разрешение в настройках или пополните баланс."
+            f"💳 Недостаточно кредитов\n\n"
+            f"Генерация {'видео' if _is_video else 'изображения'} стоит {cost_label}.\n"
+            "Пополните баланс для продолжения."
         )
         await bot.api.messages.send(peer_id=peer_id, random_id=0, message=msg)
         return
 
-    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
     model_label = AVAILABLE_MODELS.get(user_model, {}).get("label", user_model)
     aspect_ratio = settings.get("aspect_ratio", "1:1")
     thinking_level = settings.get("thinking_level", "low")
     resolution = settings.get("resolution", "original")
     max_side = RESOLUTIONS.get(resolution, {}).get("max_side", 0)
 
-    action = "Редактирую" if images else "Генерирую"
-    base_text = f"🎨 {action} изображение...\n🤖 {model_label}"
+    gen_type = "видео" if _is_video else "изображение"
+    action = "Редактирую" if images and not _is_video else "Генерирую"
+    base_text = f"🎨 {action} {gen_type}...\n🤖 {model_label}"
+    if _is_video:
+        dur = settings.get("video_duration", 8)
+        vres = settings.get("video_resolution", "720p")
+        base_text += f"\n⏱ {dur} сек • 📺 {vres}"
+
     processing_id = await bot.api.messages.send(
         peer_id=peer_id, random_id=0,
         message=f"{base_text}\n\n◐ Обработка — 0 сек.",
@@ -680,46 +995,82 @@ async def _generate_and_send(
 
     start_time = time.monotonic()
 
-    async def _do_generate() -> bytes:
-        raw = await vertex_service.generate_image(
-            prompt=prompt,
-            images=images,
-            model_override=user_model,
-            aspect_ratio=aspect_ratio,
-            thinking_level=thinking_level,
-        )
-        if max_side > 0:
-            loop = asyncio.get_running_loop()
-            raw = await loop.run_in_executor(None, _upscale_image, raw, max_side)
-        return raw
+    if _is_video:
+        from bot.user_settings import video_supports_audio, video_supports_image as _vsi2
+        video_aspect = settings.get("video_aspect_ratio", "16:9")
+        video_duration = settings.get("video_duration", 8)
+        video_resolution = settings.get("video_resolution", "720p")
+        video_audio = settings.get("video_audio", True) and video_supports_audio(user_model)
+        _ref_image: bytes | None = images[0] if images and _vsi2(user_model) else None
+        if _ref_image is not None:
+            video_duration = 8
+
+        async def _do_generate() -> bytes:
+            return await vertex_service.generate_video(
+                prompt=prompt,
+                model=user_model,
+                aspect_ratio=video_aspect,
+                duration_seconds=video_duration,
+                resolution=video_resolution,
+                generate_audio=video_audio,
+                user_id=uid,
+                username=f"vk:{uid}",
+                image=_ref_image,
+            )
+    else:
+        async def _do_generate() -> bytes:
+            raw = await vertex_service.generate_image(
+                prompt=prompt,
+                images=images,
+                model_override=user_model,
+                aspect_ratio=aspect_ratio,
+                thinking_level=thinking_level,
+                user_id=uid,
+                username=f"vk:{uid}",
+            )
+            if max_side > 0:
+                loop = asyncio.get_running_loop()
+                raw = await loop.run_in_executor(None, _upscale_image, raw, max_side)
+            return raw
 
     gen_task = asyncio.create_task(_do_generate())
     active_tasks[uid] = gen_task
 
     try:
-        image_bytes = await gen_task
+        result_bytes = await gen_task
         await animator.stop()
         active_tasks.pop(uid, None)
         elapsed = int(time.monotonic() - start_time)
 
-        send_mode = settings.get("send_mode", "photo")
-        caption = f"✅ Изображение готово! ({elapsed} сек.)\n{prompt[:200]}"
-
-        upload_action = "📤 Загрузка файла" if send_mode == "document" else "📤 Загрузка фото"
-        upload_base = f"🎨 {action} изображение...\n🤖 {model_label}\n\n✅ Готово за {elapsed} сек."
-        upload_animator = VKProgressAnimator(
-            bot, peer_id, processing_id, upload_base,
-            action_text=upload_action,
-        )
-        upload_animator.start()
-
-        try:
-            if send_mode == "document":
-                attachment = await upload_document_to_vk(bot.api, peer_id, image_bytes)
-            else:
-                attachment = await upload_photo_to_vk(bot.api, peer_id, image_bytes)
-        finally:
-            await upload_animator.stop()
+        if _is_video:
+            caption = f"✅ Видео готово! ({elapsed} сек.)\n{prompt[:200]}"
+            upload_base = f"🎨 {action} {gen_type}...\n🤖 {model_label}\n\n✅ Готово за {elapsed} сек."
+            upload_animator = VKProgressAnimator(
+                bot, peer_id, processing_id, upload_base,
+                action_text="📤 Загрузка видео",
+            )
+            upload_animator.start()
+            try:
+                attachment = await upload_document_to_vk(bot.api, peer_id, result_bytes, filename="video.mp4")
+            finally:
+                await upload_animator.stop()
+        else:
+            send_mode = settings.get("send_mode", "photo")
+            caption = f"✅ Изображение готово! ({elapsed} сек.)\n{prompt[:200]}"
+            upload_action = "📤 Загрузка файла" if send_mode == "document" else "📤 Загрузка фото"
+            upload_base = f"🎨 {action} {gen_type}...\n🤖 {model_label}\n\n✅ Готово за {elapsed} сек."
+            upload_animator = VKProgressAnimator(
+                bot, peer_id, processing_id, upload_base,
+                action_text=upload_action,
+            )
+            upload_animator.start()
+            try:
+                if send_mode == "document":
+                    attachment = await upload_document_to_vk(bot.api, peer_id, result_bytes)
+                else:
+                    attachment = await upload_photo_to_vk(bot.api, peer_id, result_bytes)
+            finally:
+                await upload_animator.stop()
 
         await bot.api.messages.send(
             peer_id=peer_id, random_id=0,
@@ -733,6 +1084,15 @@ async def _generate_and_send(
             increment_generations(uid, first_name, platform="vk", credits_cost=credits_cost)
         except Exception:
             pass
+
+        if not _is_video:
+            asyncio.create_task(log_generation_vk(
+                image_bytes=result_bytes,
+                prompt=prompt,
+                user_id=uid,
+                user_name=settings.get("first_name") or str(uid),
+                model=user_model,
+            ))
 
         try:
             await bot.api.messages.delete(
@@ -796,7 +1156,7 @@ async def _generate_and_send(
         try:
             await bot.api.messages.edit(
                 peer_id=peer_id, message_id=processing_id,
-                message="Не удалось сгенерировать изображение.\nПопробуйте ещё раз.",
+                message=f"Не удалось сгенерировать {gen_type}.\nПопробуйте ещё раз.",
                 keyboard=get_switch_model_keyboard(user_model),
             )
         except Exception:

@@ -1,0 +1,31 @@
+duler tick #1126  enabled=True  time=17:13 MSK
+2026-04-15T14:08:26.115328736Z stdout F 2026-04-15 17:08:26 [INFO] bot.autopub.scheduler — [autopub] сегодня опубликовано=3/3  в очереди=2 (draft=0 approved=2)
+2026-04-15T14:08:26.110723753Z stdout F 2026-04-15 17:08:26 [INFO] bot.autopub.scheduler — [autopub] scheduler tick #1121  enabled=True  time=17:08 MSK
+2026-04-15T14:03:26.057741595Z stdout F 2026-04-15 17:03:26 [INFO] bot.autopub.scheduler — [autopub] сегодня опубликовано=3/3  в очереди=2 (draft=0 approved=2)
+2026-04-15T14:03:26.050433898Z stdout F 2026-04-15 17:03:26 [INFO] bot.autopub.scheduler — [autopub] scheduler tick #1116  enabled=True  time=17:03 MSK
+2026-04-15T14:00:26.015340508Z stdout F 2026-04-15 17:00:26 [INFO] bot.autopub.scheduler — ━━ [autopub] ПУБЛИКАЦИЯ ЗАВЕРШЕНА ━━━━━━━━━━━━━━━━
+2026-04-15T14:00:26.015318553Z stdout F 2026-04-15 17:00:26 [INFO] bot.autopub.scheduler — [autopub] пост id=22 опубликован ✓ (TG=55 VK=—)
+2026-04-15T14:00:26.01371677Z stdout F 2026-04-15 17:00:26 [ERROR] bot.autopub.scheduler — [autopub] → VK FAILED (см. ошибки publisher выше)
+2026-04-15T14:00:26.013713351Z stdout F 2026-04-15 17:00:26 [ERROR] bot.autopub.publisher — [autopub VK] все фото-методы не сработали — публикация без фото запрещена
+2026-04-15T14:00:26.013688572Z stdout F 2026-04-15 17:00:26 [ERROR] bot.autopub.publisher — [autopub VK] 2/3 фото 2/2 — не удалось получить upload URL
+2026-04-15T14:00:26.012633485Z stdout F 2026-04-15 17:00:26 [ERROR] bot.autopub.publisher — [autopub VK] код ошибки=8  сообщение=Invalid request: Application is blocked
+2026-04-15T14:00:26.011413146Z stdout F 2026-04-15 17:00:26 [ERROR] bot.autopub.publisher — [autopub VK] getWallUploadServer failed: {'error': {'error_code': 8, 'error_msg': 'Invalid request: Application is blocked', 'request_params': [{'key': 'method', 'value': 'photos.getWallUploadServer'}, {'key': 'oauth', 'value': '1'}, {'key': 'v', 'value': '5.199'}, {'key': 'group_id', 'value': '237275076'}]}}
+2026-04-15T14:00:25.815065751Z stdout F 2026-04-15 17:00:25 [ERROR] bot.autopub.publisher — [autopub VK] 2/3 фото 1/2 — не удалось получить upload URL
+2026-04-15T14:00:25.812227031Z stdout F 2026-04-15 17:00:25 [ERROR] bot.autopub.publisher — [autopub VK] код ошибки=8  сообщение=Invalid request: Application is blocked
+2026-04-15T14:00:25.81180879Z stdout F 2026-04-15 17:00:25 [ERROR] bot.autopub.publisher — [autopub VK] getWallUploadServer failed: {'error': {'error_code': 8, 'error_msg': 'Invalid request: Application is blocked', 'request_params': [{'key': 'method', 'value': 'photos.getWallUploadServer'}, {'key': 'oauth', 'value': '1'}, {'key': 'v', 'value': '5.199'}, {'key': 'group_id', 'value': '237275076'}]}}
+2026-04-15T14:00:25.651472563Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.publisher — [autopub VK] 2/3 загружаю 2 фото на VK wall...
+2026-04-15T14:00:25.651427104Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.publisher — [autopub VK] 1/3 фото 2/2 OK — 242.2 KB
+2026-04-15T14:00:25.459576931Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.publisher — [autopub VK] 1/3 фото 1/2 OK — 243.2 KB
+2026-04-15T14:00:25.344162931Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.publisher — [autopub VK] 1/3 скачиваю 2 изображений из Telegram...
+2026-04-15T14:00:25.34415925Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.publisher — [autopub VK] начинаю публикацию  group=237275076  peer=-237275076  photos=2
+2026-04-15T14:00:25.344150841Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.scheduler — [autopub] → VK: публикую 2 фото в группу 237275076...
+2026-04-15T14:00:25.344126576Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.scheduler — [autopub] → Telegram OK: message_id=55 (2 фото)
+2026-04-15T14:00:25.343559916Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.publisher — [autopub TG] ✓ медиа-группа опубликована  2 фото  message_id=55 (0.1s)
+2026-04-15T14:00:25.233888925Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.publisher — [autopub TG] sendMediaGroup → channel=-1003960960964  2 photos  caption=469 chars
+2026-04-15T14:00:25.233883249Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.scheduler — [autopub] → Telegram: публикую 2 фото в канал -1003960960964...
+2026-04-15T14:00:25.233838897Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.scheduler — [autopub] пост содержит 2 фото
+2026-04-15T14:00:25.2252548Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.scheduler — [autopub] каналы: TG='-1003960960964'  VK='237275076'
+2026-04-15T14:00:25.225223248Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.scheduler — [autopub] публикую пост id=22 topic='Питомец в стиле Studio Ghibli'
+2026-04-15T14:00:25.223818794Z stdout F 2026-04-15 17:00:25 [INFO] bot.autopub.scheduler — ━━ [autopub] ПУБЛИКАЦИЯ ━━━━━━━━━━━━━━━━━━━━━━━━━
+2026-04-15T13:58:25.20367061Z stdout F 2026-04-15 16:58:25 [INFO] bot.autopub.scheduler — [autopub] сегодня опубликовано=2/3  в очереди=3 (draft=0 approved=3)
+2026-04-15T13:58:25.199112551Z stdout F 2026-04-15 16:58:25 [INFO] bot.autopub.scheduler — [autopub] scheduler tick #1111  enabled=True  time=16:58 MSK

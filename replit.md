@@ -53,9 +53,21 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 - `POST /api/freekassa/notification` — FreeKassa payment webhook (MD5 signature-verified)
 
 ## Credits System
-- 20 free credits on registration (FREE_CREDITS = 20)
-- 1 credit per generation, 2 credits for 4K
+- 5 free credits on registration (FREE_CREDITS = 5)
+- 1 credit per image generation, 2 credits for 4K
+- Video: 5 credits (Veo 3.1), 3 credits (Fast), 2 credits (Lite)
 - Packages: 30 credits (99₽), 100 credits (299₽), 200 credits (549₽)
+
+## Video Generation (Veo 3.1)
+- Models: veo-3.1-generate-001, veo-3.1-fast-generate-001, veo-3.1-lite-generate-001
+- Settings: duration (4/6/8 sec), resolution (720p/1080p), aspect ratio (16:9, 9:16), audio (on/off)
+- Video models only accept text prompts — photo input is rejected with a message
+- Implementation: `VertexAIService.generate_video()` with async polling (10s interval, 600s timeout)
+- Supported on both Telegram (reply_video) and VK (document upload as .mp4)
+- User settings: video_duration, video_resolution, video_aspect_ratio, video_audio (persisted)
+- Interactive video panel: after selecting a video model, opens unified panel with all settings + toggle buttons + cost info
+- Panel callbacks: `vp_aspect_*`, `vp_dur_*`, `vp_res_*`, `vp_audio` — each re-renders panel in-place
+- Settings summary shows compact "🎬 Видео: Xs • Xp • 🔊 (X кр.)" button that opens the panel
 
 ## Bot UI
 - Persistent keyboard: Menu, Ideas, Settings, Balance, Stop
@@ -77,6 +89,11 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 - Northflank (Docker): Dockerfile in root, auto-builds from GitHub
 - Templates fallback: if web/templates/ files missing, built-in HTML strings used
 - FreeKassa notification URL: https://vk-tg-picgenai.ru/api/freekassa/notification
+
+## Error Handling & Resilience
+- **VK block caching**: VK API errors 5/8/27 trigger a 10-minute cooldown (`VK_BLOCK_COOLDOWN=600`). During cooldown, VK publishing is skipped entirely (no repeated failing API calls). Block status checked at scheduler level and inside photo upload loop for immediate abort.
+- **503 vs 429 separation**: Google API 503 (Service Unavailable) gets a short 15s cooldown vs 60s for 429 (rate limit). This allows faster recovery from temporary server issues.
+- **API key history**: Each key slot tracks last 200 requests with status, duration, error details. Viewable in admin panel.
 
 ## Dependencies
 Managed via `requirements.txt` with pip. Key packages:
