@@ -1,0 +1,72 @@
+Основываясь на официальной документации Google Cloud и архитектуре их API, я изучил вашу проблему.
+
+Ошибка происходит из-за фундаментального несовпадения способа авторизации и URL-адреса, к которому обращается ваш бот[1][2].
+
+В чем конкретно ошибка в коде:
+
+Вы обращаетесь к серверам корпоративного Google Cloud Vertex AI (us-central1-aiplatform.googleapis.com), но при этом пытаетесь передать обычный API-ключ в URL (?key=AQ...)[2][3].
+
+Vertex AI не принимает ?key= — он требует авторизацию через сервисные аккаунты (заголовок Authorization: Bearer <token>)[2][4].
+
+Так как сервер не принимает такой запрос, он возвращает стандартную HTML-страницу ошибки 404 Not Found. Ваша библиотека (aiohttp) пытается прочитать этот HTML как JSON, из-за чего бот крашится с ошибкой ContentTypeError.
+
+У вас есть два пути решения этой проблемы, в зависимости от того, какой метод вы хотите использовать. Покажите это руководство разработчику бота.
+
+Решение 1: Использовать Google AI Studio (самый простой путь)
+
+Так как ваш бот уже заточен под работу с API-ключами (в логах видно slot='api_key_1'), вам не нужно использовать домены Vertex AI. Вам нужно перевести запросы на публичный Gemini API.
+
+Что исправить в коде (vertex_ai_service.py):
+
+Эндпоинт генерации видео нужно поменять с us-central1-aiplatform.googleapis.com на:
+https://generativelanguage.googleapis.com/v1beta/models/veo-3.1-lite-generate-001:generateVideos?key=ВАШ_КЛЮЧ
+
+Эндпоинт проверки статуса (опрос/polling): когда первая ручка возвращает ID операции, статус нужно проверять по другому адресу.
+Было (ошибочное): https://us-central.../locations/.../publishers/google/models/.../operations/6736...?key=...
+Нужно сделать: GET https://generativelanguage.googleapis.com/v1beta/operations/673617a9-c1d3-4140-b135-ee1f37eb0cd5?key=ВАШ_КЛЮЧ
+
+Решение 2: Использовать Google Cloud Vertex AI (корпоративный путь)
+
+Если вы принципиально должны использовать проект first-vision-491914-r4 в Google Cloud, то API-ключи использовать нельзя[2].
+
+Что исправить в коде:
+
+Авторизация: Уберите ?key=... из URL. Вместо этого настройте получение OAuth 2.0 токена из сервисного аккаунта Google Cloud (через библиотеку google-auth). В заголовки (Headers) запроса нужно передавать:
+"Authorization": "Bearer ya29.c.c0AY..."
+
+Исправление URL для проверки статуса: Формат URL для опроса долгих операций (LRO) в Vertex AI не должен содержать путь до модели[5].
+Нужно сделать:
+GET https://us-central1-aiplatform.googleapis.com/v1beta1/projects/first-vision-491914-r4/locations/us-central1/operations/673617a9-c1d3-4140-b135-ee1f37eb0cd5[5]
+
+Рекомендация по "защите от падений"
+
+Чтобы в будущем бот не крашился при малейшем сбое API Google, разработчику нужно добавить обработку ошибок при чтении JSON:
+
+code
+Python
+download
+content_copy
+expand_less
+async with session.get(url) as response:
+    if response.status != 200:
+        error_text = await response.text()
+        logger.error(f"Google API Error {response.status}: {error_text}")
+        # Здесь вернуть понятную ошибку юзеру, а не падать
+        return None 
+    data = await response.json()
+
+Итог: Код бота путает два разных сервиса от Google. Ему нужно либо использовать URL от публичного AI Studio (раз он использует API-ключ), либо переделать авторизацию на токены (раз он обращается к URL от Vertex AI).
+
+Sources
+help
+
+google.dev
+medium.com
+google.com
+google.com
+google.com
+Google Search Suggestions
+Display of Search Suggestions is required when using Grounding with Google Search. Learn more
+Vertex AI long running operations REST URL
+"veo" vertex ai video generation REST API
+vertex ai check operation status API endpoint
