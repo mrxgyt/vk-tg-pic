@@ -1,14 +1,14 @@
 # PicGenAI — Telegram + VK Image Generation Bot
 
 ## Overview
-An asynchronous multi-platform bot (Telegram + VK) for AI image generation using Google Gemini / Vertex AI. Built with Python 3.12, aiogram 3.x (Telegram), and vkbottle (VK). Includes a credit-based monetization system with FreeKassa (VK) and Pally.info (TG) payment integration.
+An asynchronous multi-platform bot (Telegram + VK) for AI image, video, and music generation using Google Gemini / Vertex AI. Built with Python 3.12, aiogram 3.x (Telegram), and vkbottle (VK). Includes a credit-based monetization system with FreeKassa (VK) and Pally.info (TG) payment integration.
 
 ## Architecture
 - **Entry point**: `start_all.py` — runs Telegram bot, VK bot, and a web server concurrently via asyncio
 - **Web server**: aiohttp on port 5000 (dev) / 8080 (Northflank) — landing page, payment pages, webhooks
 - **Bot logic**: `bot/` — Telegram handlers, middlewares, services
 - **VK logic**: `vk_bot/` — VK handlers
-- **Shared services**: `bot/services/vertex_ai_service.py` — Google Gemini AI client
+- **Shared services**: `bot/services/vertex_ai_service.py` — Google Gemini AI client for images, Veo video, and Lyria music
 - **Payment (FreeKassa)**: `bot/services/freekassa_service.py` — URL-based payment for VK
 - **Payment (Pally)**: `bot/services/payment_service.py` — Pally.info API for Telegram
 - **Web pages**: `web/templates/` — landing (index.html), success.html, fail.html (+ fallback in code)
@@ -34,7 +34,6 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 
 ## Other Secrets
 - `DATABASE_URL` — PostgreSQL connection string
-- `GITHUB_PERSONAL_ACCESS_TOKEN` — GitHub push token
 
 ## Running
 - Workflow: "Start application" runs `python start_all.py`
@@ -53,9 +52,29 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 - `POST /api/freekassa/notification` — FreeKassa payment webhook (MD5 signature-verified)
 
 ## Credits System
-- 20 free credits on registration (FREE_CREDITS = 20)
-- 1 credit per generation, 2 credits for 4K
+- 5 free credits on registration (FREE_CREDITS = 5)
+- 1 credit per image generation, 2 credits for 4K
+- Video: 5 credits (Veo 3.1), 3 credits (Fast), 2 credits (Lite)
+- Music: 4 credits (Lyria 3 Pro full song, $0.08), 2 credits (Lyria 3 30s clip, $0.04)
 - Packages: 30 credits (99₽), 100 credits (299₽), 200 credits (549₽)
+
+## Video Generation (Veo 3.1)
+- Models: veo-3.1-generate-001, veo-3.1-fast-generate-001, veo-3.1-lite-generate-001
+- Settings: duration (4/6/8 sec), resolution (720p/1080p), aspect ratio (16:9, 9:16), audio (on/off)
+- Video models only accept text prompts — photo input is rejected with a message
+- Implementation: `VertexAIService.generate_video()` uses Gemini Developer API for API-key slots with polling (10s interval, 600s timeout)
+- Supported on both Telegram (reply_video) and VK (document upload as .mp4)
+- User settings: video_duration, video_resolution, video_aspect_ratio, video_audio (persisted)
+- Interactive video panel: after selecting a video model, opens unified panel with all settings + toggle buttons + cost info
+- Panel callbacks: `vp_aspect_*`, `vp_dur_*`, `vp_res_*`, `vp_audio` — each re-renders panel in-place
+- Settings summary shows compact "🎬 Видео: Xs • Xp • 🔊 (X кр.)" button that opens the panel
+
+## Music Generation (Lyria 3)
+- Models: lyria-3-pro-preview (full song, 4 credits) and lyria-3-clip-preview (30s clip, 2 credits)
+- Inputs: text prompts and image + prompt; output is MP3 audio
+- Implementation: `VertexAIService.generate_music()` uses Gemini Developer API `generate_content` with AUDIO/TEXT response modalities and extracts MP3 bytes from inline data
+- Supported on both Telegram (`reply_audio`) and VK (document upload as .mp3)
+- Music models appear in the same unified model/settings picker as image and video models
 
 ## Bot UI
 - Persistent keyboard: Menu, Ideas, Settings, Balance, Stop
@@ -78,8 +97,13 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 - Templates fallback: if web/templates/ files missing, built-in HTML strings used
 - FreeKassa notification URL: https://vk-tg-picgenai.ru/api/freekassa/notification
 
+## Error Handling & Resilience
+- **VK block caching**: VK API errors 5/8/27 trigger a 10-minute cooldown (`VK_BLOCK_COOLDOWN=600`). During cooldown, VK publishing is skipped entirely (no repeated failing API calls). Block status checked at scheduler level and inside photo upload loop for immediate abort.
+- **503 vs 429 separation**: Google API 503 (Service Unavailable) gets a short 15s cooldown vs 60s for 429 (rate limit). This allows faster recovery from temporary server issues.
+- **API key history**: Each key slot tracks last 200 requests with status, duration, error details. Viewable in admin panel.
+
 ## Dependencies
 Managed via `requirements.txt` with pip. Key packages:
-- aiogram>=3.15, vkbottle>=4.8, google-genai>=1.9
+- aiogram>=3.15, vkbottle>=4.8, google-genai installed with Lyria-capable 1.52+ runtime
 - pydantic-settings>=2.7, Pillow>=11.0, aiohttp>=3.9
 - psycopg2-binary>=2.9

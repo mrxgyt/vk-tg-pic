@@ -18,12 +18,18 @@ _504_RETRY_DELAY = 10  # VK server-side gateway timeout — wait longer before r
 
 def _detect_format(image_bytes: bytes) -> tuple[str, str]:
     """Return (filename, content_type) based on file magic bytes."""
+    if image_bytes[:3] == b"ID3" or (
+        len(image_bytes) >= 2 and image_bytes[0] == 0xFF and (image_bytes[1] & 0xE0) == 0xE0
+    ):
+        return "audio.mp3", "audio/mpeg"
     if image_bytes[:4] == b"\x89PNG":
         return "image.png", "image/png"
     if image_bytes[:2] == b"\xff\xd8":
         return "image.jpg", "image/jpeg"
     if image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
         return "image.webp", "image/webp"
+    if len(image_bytes) >= 8 and image_bytes[4:8] == b"ftyp":
+        return "video.mp4", "video/mp4"
     return "image.png", "image/png"
 
 

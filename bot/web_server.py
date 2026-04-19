@@ -23,7 +23,8 @@ PALLY_SHOP_ID = os.getenv("PALLY_SHOP_ID", "")
 PALLY_TOKEN = os.getenv("PALLY_TOKEN", "")
 
 CREDIT_PACKAGES = {
-    "pack_30": {"credits": 30, "amount": 99.00, "label": "30 кредитов"},
+    "pack_3":   {"credits": 3,   "amount": 10.00,  "label": "3 кредита"},
+    "pack_30":  {"credits": 30,  "amount": 99.00,  "label": "30 кредитов"},
     "pack_100": {"credits": 100, "amount": 299.00, "label": "100 кредитов"},
     "pack_200": {"credits": 200, "amount": 549.00, "label": "200 кредитов"},
 }
@@ -70,13 +71,27 @@ async def handle_index(request: web.Request) -> web.Response:
     return web.Response(text=html, content_type="text/html")
 
 
+_TG_BOT_URL = "https://t.me/PicGenAI_26_bot"
+_VK_BOT_URL = "https://vk.me/picgenai"
+
+
 async def handle_success(request: web.Request) -> web.Response:
+    src = request.rel_url.query.get("src", "tg")
+    bot_url = _VK_BOT_URL if src == "vk" else _TG_BOT_URL
+    bot_label = "ВКонтакте" if src == "vk" else "Telegram"
     html = _read_template("success.html")
+    html = html.replace("https://t.me/PicGenAI_26_bot", bot_url)
+    html = html.replace("Вернуться в бота", f"Вернуться в {bot_label}-бот")
     return web.Response(text=html, content_type="text/html")
 
 
 async def handle_fail(request: web.Request) -> web.Response:
+    src = request.rel_url.query.get("src", "tg")
+    bot_url = _VK_BOT_URL if src == "vk" else _TG_BOT_URL
+    bot_label = "ВКонтакте" if src == "vk" else "Telegram"
     html = _read_template("fail.html")
+    html = html.replace("https://t.me/PicGenAI_26_bot", bot_url)
+    html = html.replace("Вернуться в бота", f"Вернуться в {bot_label}-бот")
     return web.Response(text=html, content_type="text/html")
 
 
@@ -288,8 +303,101 @@ def _credit_from_order_id(order_id: str, packages: dict | None = None) -> None:
         logger.warning("Unexpected order_id format: %s", order_id)
 
 
+async def handle_lava_webhook(request: web.Request) -> web.Response:
+    from bot.services.lava_service import verify_webhook_sign, CREDIT_PACKAGES as LAVA_PACKAGES
+
+    try:
+        data = await request.json()
+    except Exception:
+        logger.error("Lava webhook: cannot parse body")
+        return web.Response(text="BAD REQUEST", status=400)
+
+    logger.info("Lava webhook received: %s", json.dumps(data, ensure_ascii=False))
+
+    webhook_type = data.get("type")
+    if webhook_type != 1:
+        return web.Response(text="OK", status=200)
+
+    invoice_id = str(data.get("invoice_id", ""))
+    order_id = str(data.get("order_id", ""))
+    status = data.get("status", "")
+    amount = str(data.get("amount", ""))
+    pay_time = str(data.get("pay_time", ""))
+    received_sign = str(data.get("sign", ""))
+    source = str(data.get("custom_fields", "tg") or "tg")
+
+    if received_sign and invoice_id and amount and pay_time:
+        if not verify_webhook_sign(invoice_id, amount, pay_time, received_sign):
+            logger.warning("Lava webhook: invalid signature")
+            return web.Response(text="INVALID SIGN", status=403)
+
+    if status != "success" or not order_id:
+        return web.Response(text="OK", status=200)
+
+    if _db.is_available():
+        stored = _db.get_payment(order_id)
+        if stored:
+            if stored["status"] == "success":
+                logger.info("Lava: order %s already completed — skipping", order_id)
+                return web.Response(text="OK", status=200)
+            if not _db.complete_payment(order_id, invoice_id):
+                logger.info("Lava: order %s race condition — skipping", order_id)
+                return web.Response(text="OK", status=200)
+            pack = LAVA_PACKAGES.get(stored["pack_key"]) or CREDIT_PACKAGES.get(stored["pack_key"])
+            if pack:
+                new_balance = add_credits(stored["user_id"], pack["credits"])
+                logger.info(
+                    "Lava credits added: user=%s pack=%s credits=+%d balance=%d",
+                    stored["user_id"], stored["pack_key"], pack["credits"], new_balance,
+                )
+                from bot.notify import notify_payment
+                await notify_payment(
+                    stored["user_id"], pack["credits"],
+                    stored["amount"], pack["label"],
+                    source=source,
+                )
+        else:
+            if not _db.mark_order_processed_memory(f"lava_{order_id}"):
+                logger.info("Lava duplicate in-memory webhook for %s — skipping", order_id)
+                return web.Response(text="OK", status=200)
+            _credit_from_order_id(order_id, LAVA_PACKAGES)
+    else:
+        if not _db.mark_order_processed_memory(f"lava_{order_id}"):
+            logger.info("Lava duplicate in-memory webhook for %s — skipping", order_id)
+            return web.Response(text="OK", status=200)
+        _credit_from_order_id(order_id, LAVA_PACKAGES)
+
+    return web.Response(text="OK", status=200)
+
+
+@web.middleware
+async def _no_cache_middleware(request: web.Request, handler) -> web.Response:
+    """Add Cache-Control: no-store to all /admin/* responses so CDN never caches them."""
+    response = await handler(request)
+    if request.path.startswith("/admin"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
+@web.middleware
+async def _error_middleware(request: web.Request, handler) -> web.Response:
+    """Global safety net: catch any unhandled exception so the server never crashes."""
+    try:
+        return await handler(request)
+    except web.HTTPException:
+        raise  # let aiohttp handle normal HTTP errors (404, 302, etc.)
+    except Exception as exc:
+        logger.exception("Unhandled error in %s %s: %s", request.method, request.path, exc)
+        return web.Response(
+            text="500 Internal Server Error — see server logs",
+            status=500,
+        )
+
+
 def create_web_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[_no_cache_middleware, _error_middleware])
     app.router.add_get("/", handle_index)
     app.router.add_get("/shop-verification-WG76VJD7xl.txt", handle_verification)
     app.router.add_get("/payment/success", handle_success)
@@ -298,8 +406,11 @@ def create_web_app() -> web.Application:
     app.router.add_get("/privacy", handle_privacy)
     app.router.add_get("/consent", handle_consent)
     app.router.add_get("/refund", handle_refund_page)
+    app.router.add_post("/webhook/lava", handle_lava_webhook)
     app.router.add_post("/webhook/pally", handle_webhook)
     app.router.add_post("/webhook/pally/refund", handle_refund)
     app.router.add_post("/webhook/pally/chargeback", handle_chargeback)
     app.router.add_post("/api/freekassa/notification", handle_freekassa_notification)
+    from bot.web_admin import register_admin_routes
+    register_admin_routes(app)
     return app

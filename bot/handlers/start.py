@@ -17,15 +17,19 @@ from bot.keyboards import (
     get_persistent_keyboard,
     get_settings_summary_keyboard,
     get_balance_keyboard,
+    get_video_panel_text,
 )
+from bot.user_settings import is_video_model as _is_video_model
 from bot.user_settings import (
     get_user_settings,
     set_last_menu,
     save_user_settings,
     cancel_active_task,
     FREE_CREDITS,
+    get_chat_daily_count,
+    get_chat_daily_limit,
 )
-from bot.handlers.creative import _sessions as creative_sessions, _final_prompts as creative_prompts
+from bot.handlers.creative import _sessions as chat_sessions
 
 router = Router(name="start")
 
@@ -99,8 +103,14 @@ async def cmd_menu(message: Message) -> None:
 @router.message(lambda m: m.text == BTN_SETTINGS)
 async def cmd_settings(message: Message) -> None:
     uid = message.from_user.id
+    settings = get_user_settings(uid)
+    model_id = settings.get("model", "gemini-3.1-flash-image-preview")
+    if _is_video_model(model_id):
+        text = get_video_panel_text(uid)
+    else:
+        text = "⚙️ <b>Настройки</b>\n\nВыберите параметр который хотите изменить:"
     sent = await message.answer(
-        "⚙️ <b>Настройки</b>\n\nВыберите параметр который хотите изменить:",
+        text,
         parse_mode="HTML",
         reply_markup=get_settings_summary_keyboard(uid),
     )
@@ -113,25 +123,40 @@ async def cmd_balance(message: Message) -> None:
     settings = get_user_settings(uid)
     credits = settings.get("credits", FREE_CREDITS)
     generations = settings.get("generations_count", 0)
+    chat_used = get_chat_daily_count(uid)
+    chat_limit = get_chat_daily_limit(uid)
 
     purchased = max(0, credits - FREE_CREDITS) if credits > FREE_CREDITS else 0
     free_left = min(credits, FREE_CREDITS)
 
-    text = (
-        "💰 <b>Ваш баланс</b>\n\n"
-        f"🔋 <b>Всего кредитов: {credits}</b>\n"
-    )
+    lines = ["💰 <b>Ваш баланс</b>", ""]
+    lines.append("┌─────────────────────")
+    lines.append(f"│ 🔋 <b>Кредитов: {credits}</b>")
     if purchased > 0:
-        text += f"💎 Купленные: {purchased}\n"
-        text += f"🎁 Бесплатные: {free_left}\n"
+        lines.append(f"│ 💎 Купленные: {purchased}")
+        lines.append(f"│ 🎁 Бесплатные: {free_left}")
     else:
-        text += f"🎁 Бесплатные: {free_left} из {FREE_CREDITS}\n"
-    text += (
-        f"🎨 Сгенерировано: {generations}\n\n"
-        "Выберите пакет для пополнения:"
-    )
+        lines.append(f"│ 🎁 Бесплатные: {free_left} из {FREE_CREDITS}")
+    lines.append(f"│ 🎨 Сгенерировано: {generations}")
+    lines.append("└─────────────────────")
+    lines.append("")
+    lines.append("📋 <b>Стоимость генерации:</b>")
+    lines.append("▫️ Фото 2К, Full HD и ниже — <b>1 кредит</b>")
+    lines.append("▫️ Фото 4K — <b>2 кредита</b>")
+    lines.append("▫️ Lyria 3 Pro (полная песня) — <b>4 кредита</b>")
+    lines.append("▫️ Lyria 3 (30 сек.) — <b>2 кредита</b>")
+    lines.append("")
+    lines.append("💬 <b>Чат с ИИ (в день):</b>")
+    lines.append(f"▫️ Использовано: <b>{chat_used}</b> из <b>{chat_limit}</b>")
+    lines.append(f"▫️ Дневной лимит: <b>{chat_limit}</b> запросов")
+    lines.append("")
+    lines.append("💳 <b>Выберите пакет для пополнения:</b>")
 
-    await message.answer(text, parse_mode="HTML", reply_markup=get_balance_keyboard())
+    await message.answer(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=get_balance_keyboard(),
+    )
 
 
 @router.message(Command("info"))
@@ -157,14 +182,13 @@ async def cmd_info(message: Message) -> None:
 async def cmd_stop(message: Message) -> None:
     uid = message.from_user.id
     cancelled = cancel_active_task(uid)
-    was_creative = uid in creative_sessions
-    creative_sessions.pop(uid, None)
-    creative_prompts.pop(uid, None)
+    was_chat = uid in chat_sessions
+    chat_sessions.pop(uid, None)
 
-    if cancelled or was_creative:
+    if cancelled or was_chat:
         text = "⛔ <b>Отменено.</b>\n\nОтправьте новый промпт или откройте меню."
-        if was_creative:
-            text = "⛔ <b>Режим «Идеи» завершён.</b>\n\nОтправьте промпт или начните заново."
+        if was_chat:
+            text = "⛔ <b>Чат завершён.</b>\n\nОтправьте промпт для генерации или начните чат заново."
         await message.answer(text, parse_mode="HTML")
     else:
         await message.answer(

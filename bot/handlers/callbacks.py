@@ -22,12 +22,20 @@ from bot.keyboards import (
     get_thinking_level_keyboard,
     get_settings_summary_keyboard,
     get_balance_keyboard,
+    get_video_duration_keyboard,
+    get_video_resolution_keyboard,
+    get_video_aspect_keyboard,
+    get_video_panel_text,
+    get_video_panel_keyboard,
+    get_video_task_keyboard,
 )
 from bot.user_settings import (
     user_settings, get_user_settings, set_last_menu, save_user_settings,
     AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
+    VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, VIDEO_TASKS,
+    is_video_model, is_music_model, get_available_tasks_for_model,
 )
-from bot.services.freekassa_service import create_payment_url, CREDIT_PACKAGES
+from bot.services.lava_service import create_payment_url, CREDIT_PACKAGES
 
 logger = logging.getLogger(__name__)
 router = Router(name="callbacks")
@@ -53,10 +61,36 @@ async def _safe_edit(callback: CallbackQuery, text: str, reply_markup=None) -> N
 _SETTINGS_TEXT = "⚙️ <b>Настройки</b>\n\nВыберите параметр который хотите изменить:"
 
 
+def _video_settings_text(uid: int) -> str:
+    from bot.keyboards import get_video_panel_text
+    return get_video_panel_text(uid)
+
+
+def _get_settings_text(uid: int) -> str:
+    settings = get_user_settings(uid)
+    model_id = settings.get("model", "gemini-3.1-flash-image-preview")
+    if is_video_model(model_id):
+        return _video_settings_text(uid)
+    if is_music_model(model_id):
+        info = AVAILABLE_MODELS.get(model_id, {})
+        return (
+            f"⚙️ <b>Настройки — {info.get('label', model_id)}</b>\n\n"
+            "┌─────────────────────\n"
+            f"│ 🎵 Длительность: <b>{info.get('duration_label', 'аудио')}</b>\n"
+            f"│ 💰 Стоимость: <b>{info.get('credits', 2)} кр.</b>\n"
+            f"│ 💵 Google: <b>${info.get('google_price_usd', 0):.2f}</b>\n"
+            "│ 📥 Вход: <b>текст или фото</b>\n"
+            "│ 📤 Выход: <b>MP3</b>\n"
+            "└─────────────────────\n\n"
+            "Чтобы изменить музыкальную модель, нажмите кнопку модели."
+        )
+    return _SETTINGS_TEXT
+
+
 @router.callback_query(lambda c: c.data == "back_to_settings")
 async def back_to_settings(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
-    await _safe_edit(callback, _SETTINGS_TEXT, reply_markup=get_settings_summary_keyboard(uid))
+    await _safe_edit(callback, _get_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
     await callback.answer()
 
 
@@ -89,7 +123,7 @@ async def set_model(callback: CallbackQuery) -> None:
     info = AVAILABLE_MODELS[model_id]
     await callback.answer(f"Модель: {info['label']}")
 
-    await _safe_edit(callback, _SETTINGS_TEXT, reply_markup=get_settings_summary_keyboard(uid))
+    await _safe_edit(callback, _get_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
 
 
 @router.callback_query(lambda c: c.data == "choose_aspect")
@@ -241,7 +275,7 @@ async def buy_credits(callback: CallbackQuery) -> None:
         await callback.answer("Неизвестный пакет")
         return
 
-    result = create_payment_url(callback.from_user.id, pack_key)
+    result = await create_payment_url(callback.from_user.id, pack_key, source="tg")
     if result["ok"]:
         from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -257,6 +291,201 @@ async def buy_credits(callback: CallbackQuery) -> None:
     else:
         await callback.answer(f"Ошибка: {result.get('error', 'неизвестная')}", show_alert=True)
     await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "noop")
+async def noop_callback(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "open_video_panel")
+async def open_video_panel(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    await _safe_edit(callback, get_video_panel_text(uid), reply_markup=get_video_panel_keyboard(uid))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data == "choose_video_duration")
+async def choose_video_duration(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    lines = ["⏱ <b>Длительность видео:</b>\n"]
+    for dur, info in VIDEO_DURATIONS.items():
+        lines.append(f"  {info['label']}\n  <i>{info['desc']}</i>\n")
+    await _safe_edit(callback, "\n".join(lines), reply_markup=get_video_duration_keyboard(uid))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("vdur_"))
+async def set_video_duration(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    try:
+        dur = int(callback.data.replace("vdur_", "", 1))
+    except ValueError:
+        await callback.answer("Неверная длительность")
+        return
+    if dur not in VIDEO_DURATIONS:
+        await callback.answer("Неизвестная длительность")
+        return
+    settings = get_user_settings(uid)
+    settings["video_duration"] = dur
+    save_user_settings(uid)
+    await callback.answer(f"Длительность: {VIDEO_DURATIONS[dur]['label']}")
+    await _safe_edit(callback, _SETTINGS_TEXT, reply_markup=get_settings_summary_keyboard(uid))
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("vp_aspect_"))
+async def vp_set_aspect(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    key = callback.data.replace("vp_aspect_", "", 1)
+    if key not in VIDEO_ASPECT_RATIOS:
+        await callback.answer("Неизвестный формат")
+        return
+    settings = get_user_settings(uid)
+    settings["video_aspect_ratio"] = key
+    save_user_settings(uid)
+    await callback.answer(f"Формат: {VIDEO_ASPECT_RATIOS[key]}")
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("vp_dur_"))
+async def vp_set_duration(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    try:
+        dur = int(callback.data.replace("vp_dur_", "", 1))
+    except ValueError:
+        await callback.answer()
+        return
+    if dur not in VIDEO_DURATIONS:
+        await callback.answer("Неизвестная длительность")
+        return
+    settings = get_user_settings(uid)
+    settings["video_duration"] = dur
+    save_user_settings(uid)
+    await callback.answer(f"Длительность: {dur} сек")
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("vp_res_"))
+async def vp_set_resolution(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    res_id = callback.data.replace("vp_res_", "", 1)
+    if res_id not in VIDEO_RESOLUTIONS:
+        await callback.answer("Неизвестное разрешение")
+        return
+    settings = get_user_settings(uid)
+    from bot.user_settings import get_video_resolutions_for_model
+    model_id = settings.get("model", "")
+    avail = get_video_resolutions_for_model(model_id)
+    if res_id not in avail:
+        await callback.answer("Это разрешение недоступно для текущей модели")
+        return
+    settings["video_resolution"] = res_id
+    save_user_settings(uid)
+    await callback.answer(f"Разрешение: {res_id}")
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
+
+
+@router.callback_query(lambda c: c.data == "vp_audio")
+async def vp_toggle_audio(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    settings = get_user_settings(uid)
+    from bot.user_settings import video_supports_audio
+    model_id = settings.get("model", "")
+    if not video_supports_audio(model_id):
+        await callback.answer("Эта модель не поддерживает аудио", show_alert=True)
+        return
+    current = settings.get("video_audio", True)
+    settings["video_audio"] = not current
+    save_user_settings(uid)
+    state = "Вкл" if not current else "Выкл"
+    await callback.answer(f"Аудио: {state}")
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
+
+
+@router.callback_query(lambda c: c.data == "choose_video_task")
+async def choose_video_task(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    lines = ["🎯 <b>Тип задачи:</b>\n"]
+    settings = get_user_settings(uid)
+    model_id = settings.get("model", "")
+    avail = get_available_tasks_for_model(model_id)
+    for tid, tinfo in avail.items():
+        suffix = " (скоро)" if tinfo.get("coming_soon") else ""
+        lines.append(f"  {tinfo['label']}{suffix}\n  <i>{tinfo['desc']}</i>\n")
+    await _safe_edit(callback, "\n".join(lines), reply_markup=get_video_task_keyboard(uid))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("vtask_"))
+async def set_video_task(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    task_id = callback.data.replace("vtask_", "", 1)
+    if task_id not in VIDEO_TASKS:
+        await callback.answer("Неизвестная задача")
+        return
+    task_info = VIDEO_TASKS[task_id]
+    if task_info.get("coming_soon"):
+        await callback.answer("Эта функция пока недоступна", show_alert=True)
+        return
+    settings = get_user_settings(uid)
+    model_id = settings.get("model", "")
+    avail = get_available_tasks_for_model(model_id)
+    if task_id not in avail:
+        await callback.answer("Задача недоступна для этой модели", show_alert=True)
+        return
+    settings["video_task"] = task_id
+    save_user_settings(uid)
+    await callback.answer(f"Задача: {task_info['label']}")
+    await _safe_edit(callback, _video_settings_text(uid), reply_markup=get_settings_summary_keyboard(uid))
+
+
+@router.callback_query(lambda c: c.data == "choose_video_resolution")
+async def choose_video_resolution(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    lines = ["📺 <b>Разрешение видео:</b>\n"]
+    for res_id, info in VIDEO_RESOLUTIONS.items():
+        lines.append(f"  {info['label']}\n  <i>{info['desc']}</i>\n")
+    await _safe_edit(callback, "\n".join(lines), reply_markup=get_video_resolution_keyboard(uid))
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("vres_"))
+async def set_video_resolution(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    res_id = callback.data.replace("vres_", "", 1)
+    if res_id not in VIDEO_RESOLUTIONS:
+        await callback.answer("Неизвестное разрешение")
+        return
+    settings = get_user_settings(uid)
+    settings["video_resolution"] = res_id
+    save_user_settings(uid)
+    await callback.answer(f"Разрешение: {VIDEO_RESOLUTIONS[res_id]['label']}")
+    await _safe_edit(callback, _SETTINGS_TEXT, reply_markup=get_settings_summary_keyboard(uid))
+
+
+@router.callback_query(lambda c: c.data == "choose_video_aspect")
+async def choose_video_aspect(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    await _safe_edit(
+        callback,
+        "📐 <b>Формат видео:</b>\n\nВидео поддерживает только 16:9 и 9:16",
+        reply_markup=get_video_aspect_keyboard(uid),
+    )
+    await callback.answer()
+
+
+@router.callback_query(lambda c: c.data and c.data.startswith("vaspect_"))
+async def set_video_aspect(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    key = callback.data.replace("vaspect_", "", 1)
+    if key not in VIDEO_ASPECT_RATIOS:
+        await callback.answer("Неизвестный формат")
+        return
+    settings = get_user_settings(uid)
+    settings["video_aspect_ratio"] = key
+    save_user_settings(uid)
+    await callback.answer(f"Формат: {VIDEO_ASPECT_RATIOS[key]}")
+    await _safe_edit(callback, _SETTINGS_TEXT, reply_markup=get_settings_summary_keyboard(uid))
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("switch_model_"))

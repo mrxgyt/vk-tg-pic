@@ -4,6 +4,10 @@ from vkbottle import Keyboard, KeyboardButtonColor, Text, Callback
 
 from bot.user_settings import (
     get_user_settings, AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
+    VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, VIDEO_TASKS,
+    is_video_model, get_video_credits_cost, video_supports_audio, video_supports_image,
+    get_video_resolutions_for_model, get_available_tasks_for_model,
+    is_music_model,
 )
 from bot.keyboards import ASPECT_RATIOS
 
@@ -11,7 +15,7 @@ from bot.keyboards import ASPECT_RATIOS
 def get_persistent_keyboard() -> str:
     kb = Keyboard(one_time=False, inline=False)
     kb.add(Text("📋 Меню"), color=KeyboardButtonColor.PRIMARY)
-    kb.add(Text("💡 Идеи"), color=KeyboardButtonColor.POSITIVE)
+    kb.add(Text("💬 Чат"), color=KeyboardButtonColor.POSITIVE)
     kb.row()
     kb.add(Text("⚙️ Настройки"), color=KeyboardButtonColor.SECONDARY)
     kb.add(Text("💰 Баланс"), color=KeyboardButtonColor.POSITIVE)
@@ -30,29 +34,64 @@ def get_settings_keyboard(user_id: int) -> str:
     model_info = AVAILABLE_MODELS.get(current_model, {})
     model_label = model_info.get("label", current_model)
 
-    send_info = SEND_MODES.get(settings.get("send_mode", "photo"), {})
-    send_label = send_info.get("label", "🖼 Фото")
-
-    res_info = RESOLUTIONS.get(settings.get("resolution", "original"), {})
-    res_label = res_info.get("label", "📷 Оригинал")
-
-    aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
-
     kb = Keyboard(inline=True)
     kb.add(Callback(f"🤖 {model_label}", payload={"cmd": "choose_model"}))
     kb.row()
-    kb.add(Callback(f"📐 Размер: {aspect_label}", payload={"cmd": "choose_aspect"}))
-    kb.row()
 
-    if _is_flash_model(current_model):
-        thinking_info = THINKING_LEVELS.get(settings.get("thinking_level", "low"), {})
-        thinking_label = thinking_info.get("label", "💭 Лёгкий")
-        kb.add(Callback(f"🧠 Мышление: {thinking_label}", payload={"cmd": "choose_thinking"}))
+    if is_video_model(current_model):
+        aspect = settings.get("video_aspect_ratio", "16:9")
+        dur = settings.get("video_duration", 8)
+        res = settings.get("video_resolution", "720p")
+        audio = settings.get("video_audio", True)
+        has_audio = video_supports_audio(current_model)
+        avail_res = get_video_resolutions_for_model(current_model)
+        if res not in avail_res:
+            res = "1080p"
+
+        for key, label in VIDEO_ASPECT_RATIOS.items():
+            text = f"✅ {label}" if key == aspect else label
+            kb.add(Callback(text, payload={"cmd": "vp_aspect", "id": key}))
         kb.row()
 
-    kb.add(Callback(f"🔍 Качество: {res_label}", payload={"cmd": "choose_resolution"}))
-    kb.row()
-    kb.add(Callback(f"📤 Формат: {send_label}", payload={"cmd": "choose_send_mode"}))
+        for d in VIDEO_DURATIONS:
+            text = f"✅ {d}с" if d == dur else f"{d}с"
+            kb.add(Callback(text, payload={"cmd": "vp_dur", "id": d}))
+        kb.row()
+
+        for r in avail_res:
+            r_label = avail_res[r].get("label", r).replace("📺 ", "").replace("🖥 ", "").replace("📽 ", "")
+            text = f"✅ {r_label}" if r == res else r_label
+            kb.add(Callback(text, payload={"cmd": "vp_res", "id": r}))
+        kb.row()
+
+        if has_audio:
+            audio_text = "✅ 🔊 Аудио вкл" if audio else "🔇 Аудио выкл"
+            kb.add(Callback(audio_text, payload={"cmd": "vp_audio"}))
+    elif is_music_model(current_model):
+        credits = model_info.get("credits", 2)
+        duration_label = model_info.get("duration_label", "аудио")
+        kb.add(Callback(f"🎵 {duration_label} • {credits} кр.", payload={"cmd": "noop"}))
+        kb.row()
+        kb.add(Callback("📥 Вход: текст или фото", payload={"cmd": "noop"}))
+    else:
+        aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
+        kb.add(Callback(f"📐 Размер: {aspect_label}", payload={"cmd": "choose_aspect"}))
+        kb.row()
+
+        if _is_flash_model(current_model):
+            thinking_info = THINKING_LEVELS.get(settings.get("thinking_level", "low"), {})
+            thinking_label = thinking_info.get("label", "💭 Лёгкий")
+            kb.add(Callback(f"🧠 Мышление: {thinking_label}", payload={"cmd": "choose_thinking"}))
+            kb.row()
+
+        send_info = SEND_MODES.get(settings.get("send_mode", "photo"), {})
+        send_label = send_info.get("label", "🖼 Фото")
+        res_info = RESOLUTIONS.get(settings.get("resolution", "original"), {})
+        res_label = res_info.get("label", "📷 Оригинал")
+
+        kb.add(Callback(f"🔍 Качество: {res_label}", payload={"cmd": "choose_resolution"}))
+        kb.row()
+        kb.add(Callback(f"📤 Формат: {send_label}", payload={"cmd": "choose_send_mode"}))
     return kb.get_json()
 
 
@@ -60,14 +99,198 @@ def get_model_keyboard(user_id: int) -> str:
     settings = get_user_settings(user_id)
     current = settings.get("model", "gemini-3.1-flash-image-preview")
 
+    image_models = [(k, v) for k, v in AVAILABLE_MODELS.items() if v.get("type") == "image"]
+    video_models = [(k, v) for k, v in AVAILABLE_MODELS.items() if v.get("type") == "video"]
+    music_models = [(k, v) for k, v in AVAILABLE_MODELS.items() if v.get("type") == "music"]
+
     kb = Keyboard(inline=True)
-    for model_id, info in AVAILABLE_MODELS.items():
+
+    for i, (model_id, info) in enumerate(image_models):
         label = info["label"]
         if model_id == current:
             label = "✅ " + label
         kb.add(Callback(label, payload={"cmd": "set_model", "id": model_id}))
+        if (i + 1) % 2 == 0 or i == len(image_models) - 1:
+            kb.row()
+
+    if video_models:
+        kb.add(Callback("── 🎬 Видео ──", payload={"cmd": "noop"}))
+        kb.row()
+        for i, (model_id, info) in enumerate(video_models):
+            label = info["label"]
+            if model_id == current:
+                label = "✅ " + label
+            kb.add(Callback(label, payload={"cmd": "set_model", "id": model_id}))
+            if (i + 1) % 2 == 0 or i == len(video_models) - 1:
+                kb.row()
+
+    if music_models:
+        kb.add(Callback("── 🎵 Музыка ──", payload={"cmd": "noop"}))
+        kb.row()
+        for i, (model_id, info) in enumerate(music_models):
+            credits = info.get("credits", 2)
+            label = f"{info['label']} ({credits} кр.)"
+            if model_id == current:
+                label = "✅ " + label
+            kb.add(Callback(label, payload={"cmd": "set_model", "id": model_id}))
+            if (i + 1) % 2 == 0 or i == len(music_models) - 1:
+                kb.row()
+
+    kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
+    return kb.get_json()
+
+
+def get_video_duration_keyboard(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_duration", 8)
+
+    kb = Keyboard(inline=True)
+    for dur, info in VIDEO_DURATIONS.items():
+        label = info["label"]
+        if dur == current:
+            label = "✅ " + label
+        kb.add(Callback(label, payload={"cmd": "set_video_duration", "id": dur}))
         kb.row()
     kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
+    return kb.get_json()
+
+
+def get_video_resolution_keyboard(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_resolution", "720p")
+
+    kb = Keyboard(inline=True)
+    for res, info in VIDEO_RESOLUTIONS.items():
+        label = info["label"]
+        if res == current:
+            label = "✅ " + label
+        kb.add(Callback(label, payload={"cmd": "set_video_resolution", "id": res}))
+        kb.row()
+    kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
+    return kb.get_json()
+
+
+def get_video_aspect_keyboard(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    current = settings.get("video_aspect_ratio", "16:9")
+
+    kb = Keyboard(inline=True)
+    for ratio, label in VIDEO_ASPECT_RATIOS.items():
+        text = f"✅ {label}" if ratio == current else label
+        kb.add(Callback(text, payload={"cmd": "set_video_aspect", "id": ratio}))
+        kb.row()
+    kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
+    return kb.get_json()
+
+
+def get_video_panel_text(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    model_id = settings.get("model", "veo-3.1-generate-001")
+    model_info = AVAILABLE_MODELS.get(model_id, {})
+    model_label = model_info.get("label", model_id)
+    credits = model_info.get("credits", 3)
+    has_audio = video_supports_audio(model_id)
+
+    task_id = settings.get("video_task", "text-to-video")
+    avail_tasks = get_available_tasks_for_model(model_id)
+    if task_id not in avail_tasks:
+        task_id = "text-to-video"
+    task_info = VIDEO_TASKS.get(task_id, {})
+    task_label = task_info.get("label", task_id)
+
+    aspect = settings.get("video_aspect_ratio", "16:9")
+    aspect_label = VIDEO_ASPECT_RATIOS.get(aspect, aspect)
+    dur = settings.get("video_duration", 8)
+    res = settings.get("video_resolution", "720p")
+    avail_res = get_video_resolutions_for_model(model_id)
+    if res not in avail_res:
+        res = "1080p"
+    res_info = VIDEO_RESOLUTIONS.get(res, {})
+    res_label = res_info.get("label", res)
+    audio = settings.get("video_audio", True)
+
+    lines = [
+        f"⚙️ Настройки — {model_label}",
+        "",
+        "┌─────────────────────",
+        f"│ 🎯 Задача: {task_label}",
+        f"│ 📐 Формат: {aspect_label}",
+        f"│ ⏱ Длительность: {dur} сек",
+        f"│ 📺 Разрешение: {res_label}",
+    ]
+    if has_audio:
+        lines.append(f"│ 🔊 Аудио: {'Вкл' if audio else 'Выкл'}")
+    lines += [
+        "├─────────────────────",
+        f"│ 💰 Стоимость: {credits} кр.",
+        f"│ 📋 24 FPS • MP4",
+        "└─────────────────────",
+        "",
+        "Нажмите на параметр чтобы изменить:",
+    ]
+    return "\n".join(lines)
+
+
+def get_video_task_keyboard(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    model_id = settings.get("model", "veo-3.1-generate-001")
+    current = settings.get("video_task", "text-to-video")
+    avail = get_available_tasks_for_model(model_id)
+
+    kb = Keyboard(inline=True)
+    for tid, tinfo in avail.items():
+        label = tinfo["label"]
+        if tinfo.get("coming_soon"):
+            label += " (скоро)"
+        if tid == current:
+            label = "✅ " + label
+        kb.add(Callback(label, payload={"cmd": "set_vtask", "id": tid}))
+        kb.row()
+    kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
+    return kb.get_json()
+
+
+def get_video_panel_keyboard(user_id: int) -> str:
+    settings = get_user_settings(user_id)
+    model_id = settings.get("model", "veo-3.1-generate-001")
+    aspect = settings.get("video_aspect_ratio", "16:9")
+    dur = settings.get("video_duration", 8)
+    res = settings.get("video_resolution", "720p")
+    audio = settings.get("video_audio", True)
+    has_audio = video_supports_audio(model_id)
+    avail_res = get_video_resolutions_for_model(model_id)
+    if res not in avail_res:
+        res = "1080p"
+    task_id = settings.get("video_task", "text-to-video")
+    task_label = VIDEO_TASKS.get(task_id, {}).get("label", task_id)
+
+    kb = Keyboard(inline=True)
+
+    kb.add(Callback(f"🎯 Задача: {task_label}", payload={"cmd": "choose_vtask"}))
+    kb.row()
+
+    for key, label in VIDEO_ASPECT_RATIOS.items():
+        text = f"✅ {label}" if key == aspect else label
+        kb.add(Callback(text, payload={"cmd": "vp_aspect", "id": key}))
+    kb.row()
+
+    for d in VIDEO_DURATIONS:
+        text = f"✅ {d}с" if d == dur else f"{d}с"
+        kb.add(Callback(text, payload={"cmd": "vp_dur", "id": d}))
+    kb.row()
+
+    for r in avail_res:
+        r_label = avail_res[r].get("label", r).replace("📺 ", "").replace("🖥 ", "").replace("📽 ", "")
+        text = f"✅ {r_label}" if r == res else r_label
+        kb.add(Callback(text, payload={"cmd": "vp_res", "id": r}))
+    kb.row()
+
+    if has_audio:
+        audio_text = "✅ 🔊 Аудио вкл" if audio else "🔇 Аудио выкл"
+        kb.add(Callback(audio_text, payload={"cmd": "vp_audio"}))
+        kb.row()
+
+    kb.add(Callback("◀️ Назад к настройкам", payload={"cmd": "back_settings"}))
     return kb.get_json()
 
 
@@ -148,26 +371,16 @@ def get_send_mode_keyboard(user_id: int) -> str:
     return kb.get_json()
 
 
-def get_creative_prompt_keyboard() -> str:
+def get_chat_cancel_keyboard() -> str:
     kb = Keyboard(inline=True)
-    kb.add(Callback("🎨 Генерируй!", payload={"cmd": "creative_generate"}))
-    kb.row()
-    kb.add(Callback("✏️ Изменить", payload={"cmd": "creative_edit"}))
-    kb.row()
-    kb.add(Callback("❌ Отмена", payload={"cmd": "creative_cancel"}))
-    return kb.get_json()
-
-
-def get_creative_auto_keyboard() -> str:
-    kb = Keyboard(inline=True)
-    kb.add(Callback("🪄 Дополни сам и генерируй", payload={"cmd": "creative_auto"}))
-    kb.row()
-    kb.add(Callback("❌ Отмена", payload={"cmd": "creative_cancel"}))
+    kb.add(Callback("❌ Завершить чат", payload={"cmd": "chat_cancel"}))
     return kb.get_json()
 
 
 def get_balance_keyboard() -> str:
     kb = Keyboard(inline=True)
+    kb.add(Callback("🔹 3 кредита — 10₽", payload={"cmd": "buy", "pack": "pack_3"}))
+    kb.row()
     kb.add(Callback("💎 30 кредитов — 99₽", payload={"cmd": "buy", "pack": "pack_30"}))
     kb.row()
     kb.add(Callback("💎 100 кредитов — 299₽", payload={"cmd": "buy", "pack": "pack_100"}))

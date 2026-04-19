@@ -13,10 +13,13 @@ Multiple keys/accounts rotate automatically on 429 errors.
 from __future__ import annotations
 
 import asyncio
+import base64
+import datetime
 import json
 import logging
 import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +33,13 @@ from core.exceptions import (
 
 logger = logging.getLogger(__name__)
 
+_alert_task_refs: set[asyncio.Task] = set()
+
+def _fire_alert(coro):
+    task = asyncio.ensure_future(coro)
+    _alert_task_refs.add(task)
+    task.add_done_callback(_alert_task_refs.discard)
+
 # When a 429 is received the slot is locked out for the full quota-reset window.
 COOLDOWN_SECONDS = 60
 
@@ -38,12 +48,22 @@ COOLDOWN_SECONDS = 60
 RATE_WINDOW_SECONDS = 60
 
 # QPM limits per model name substring (longest match wins, "default" is the fallback).
-# Adjust these to match your actual Vertex AI quota for each model.
+# Image-generation models are expensive — keep their QPM low.
+# Text/chat models (gemini-3.1-pro-preview, etc.) have much higher quotas.
 MODEL_QPM: dict[str, int] = {
-    "flash": 5,    # gemini-x.x-flash-image-preview
-    "pro":   3,    # gemini-x-pro-image-preview  (usually lower quota)
-    "default": 5,
+    "flash-image": 5,
+    "pro-image":   3,
+    "veo-3.1":     2,
+    "veo-":        2,
+    "lyria-3":     2,
+    "default":    60,
 }
+
+VIDEO_MODELS = {"veo-3.1-generate-001", "veo-3.1-fast-generate-001", "veo-3.1-lite-generate-001"}
+MUSIC_MODELS = {"lyria-3-pro-preview", "lyria-3-clip-preview"}
+
+VIDEO_POLL_INTERVAL = 10
+VIDEO_POLL_TIMEOUT = 600
 
 
 def _qpm_for_model(model: str) -> int:
@@ -57,14 +77,18 @@ def _qpm_for_model(model: str) -> int:
 SA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "service_accounts"
 
 
+def _is_server_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("503", "500", "server error", "internal", "temporarily unavailable", "unavailable"))
+
+
 def _is_retryable(exc: BaseException) -> bool:
     msg = str(exc).lower()
     retryable_keywords = (
         "429", "quota", "resource exhausted", "rate limit",
-        "too many requests", "server error", "503", "500",
-        "internal", "temporarily unavailable",
+        "too many requests",
     )
-    return any(kw in msg for kw in retryable_keywords)
+    return any(kw in msg for kw in retryable_keywords) or _is_server_error(exc)
 
 
 def _is_model_error(exc: BaseException) -> bool:
@@ -74,17 +98,26 @@ def _is_model_error(exc: BaseException) -> bool:
 
 
 def _is_auth_error(exc: BaseException) -> bool:
-    """401/403 — the key is disabled, revoked, or lacks permissions."""
+    """401/403 — the key is disabled, revoked, or lacks permissions.
+    Note: pydantic errors contain 'extra_forbidden' — must NOT be treated as auth errors.
+    """
     msg = str(exc).lower()
+    # Pydantic ValidationError contains "extra_forbidden" — skip it
+    if "extra_forbidden" in msg or "validation error" in msg:
+        return False
     if "401" in msg or "unauthenticated" in msg or "access_token_type_unsupported" in msg:
         return True
-    if "403" in msg or "permission_denied" in msg or "forbidden" in msg:
+    if "403" in msg or "permission_denied" in msg:
         return True
     return False
 
 
 def _is_safety_error(exc: BaseException) -> bool:
-    msg = str(exc).lower()
+    return _is_safety_error_text(str(exc))
+
+
+def _is_safety_error_text(msg: str) -> bool:
+    msg = msg.lower()
     safety_keywords = (
         "safety", "blocked", "harm", "policy", "prohibited",
         "content_filter", "safetyfiltererror", "finish_reason: safety",
@@ -146,13 +179,43 @@ def _load_sa_files() -> list[Path]:
 class _BaseSlot:
     """Abstract base for credential slots."""
 
+    MAX_HISTORY = 200
+
     def __init__(self, index: int) -> None:
         self.index = index
         self.client: Any = None
         self.cooldown_until: float = 0.0
-        # Per-model sliding-window: { model_name: [timestamps] }
-        # Each model has an independent quota on the same API key.
+        self.auth_error: bool = False
+        self.auth_error_msg: str = ""
+        self.active_requests: int = 0
+        self.last_used_at: float = 0.0
+        self.last_model: str = ""
+        self.total_ok: int = 0
+        self.total_err: int = 0
         self._model_request_times: dict[str, list[float]] = {}
+        self.history: deque[dict] = deque(maxlen=self.MAX_HISTORY)
+
+    def record_history(
+        self,
+        *,
+        user_id: int | None,
+        username: str,
+        prompt: str,
+        model: str,
+        status: str,
+        error: str = "",
+        duration_ms: int = 0,
+    ) -> None:
+        self.history.appendleft({
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "user_id": user_id,
+            "username": username,
+            "prompt": prompt[:120],
+            "model": model,
+            "status": status,
+            "error": error[:200] if error else "",
+            "duration_ms": duration_ms,
+        })
 
     @property
     def label(self) -> str:
@@ -193,6 +256,18 @@ class _BaseSlot:
         """Call immediately before dispatching an API request for model."""
         self._model_request_times.setdefault(model, []).append(time.monotonic())
 
+    def requests_in_window_family(self, family: str) -> int:
+        """Sum requests in window for all models whose name contains `family`."""
+        now = time.monotonic()
+        cutoff = now - RATE_WINDOW_SECONDS
+        total = 0
+        for key in list(self._model_request_times.keys()):
+            if family in key.lower():
+                times = [t for t in self._model_request_times[key] if t >= cutoff]
+                self._model_request_times[key] = times
+                total += len(times)
+        return total
+
     # ── combined availability (per model) ─────────────────────────────────
     def ready_at(self, model: str) -> float:
         """Earliest time this slot can serve a new request for model."""
@@ -210,15 +285,21 @@ class _BaseSlot:
 
 
 class _ApiKeySlot(_BaseSlot):
-    """Slot that authenticates via a Google API key with Vertex AI backend."""
+    """Slot that authenticates via a Google API key."""
 
-    def __init__(self, api_key: str, index: int) -> None:
+    def __init__(self, api_key: str, index: int, project_id: str | None = None) -> None:
         super().__init__(index)
         self._api_key = api_key
+        self._project_id = project_id
+        self._video_client = None
 
     @property
     def label(self) -> str:
         return f"api_key_{self.index + 1}"
+
+    @property
+    def has_project(self) -> bool:
+        return bool(self._project_id)
 
     def get_client(self) -> Any:
         if self.client is None:
@@ -227,8 +308,28 @@ class _ApiKeySlot(_BaseSlot):
                 vertexai=True,
                 api_key=self._api_key,
             )
-            logger.info("Initialised genai client for '%s' (Vertex AI + API key mode)", self.label)
+            proj_info = f", project={self._project_id}" if self._project_id else ""
+            logger.info("Initialised genai client for '%s' (Vertex AI + API key mode%s)", self.label, proj_info)
         return self.client
+
+    def get_video_client(self) -> Any:
+        if self._video_client is None:
+            import google.genai as genai
+            self._video_client = genai.Client(api_key=self._api_key)
+            logger.info("Initialised video client for '%s' (Gemini API key mode)", self.label)
+        return self._video_client
+
+    def get_video_base_url(self) -> str | None:
+        if not self._project_id:
+            return None
+        return (
+            f"https://us-central1-aiplatform.googleapis.com/v1beta1/"
+            f"projects/{self._project_id}/locations/us-central1/"
+            f"publishers/google/models"
+        )
+
+    def get_video_api_key(self) -> str:
+        return self._api_key
 
 
 class _CredSlot(_BaseSlot):
@@ -285,14 +386,13 @@ class VertexAIService:
 
         slots: list[_BaseSlot] = []
 
-        # --- Priority 1: API keys (migrate env vars into store, then load all) ---
         from bot.api_keys_store import get_all_keys, migrate_env_keys
         migrate_env_keys()
-        api_keys = get_all_keys()
-        for i, key in enumerate(api_keys):
-            slots.append(_ApiKeySlot(api_key=key, index=i))
-        if api_keys:
-            logger.info("Loaded %d API key(s) for authentication", len(api_keys))
+        api_entries = get_all_keys()
+        for i, entry in enumerate(api_entries):
+            slots.append(_ApiKeySlot(api_key=entry["key"], index=i, project_id=entry.get("project_id")))
+        if api_entries:
+            logger.info("Loaded %d API key(s) for authentication", len(api_entries))
 
         # --- Priority 2: Service account JSON files (fallback) ---
         if not slots:
@@ -317,17 +417,29 @@ class VertexAIService:
     def reload_keys(self, settings: Settings | None = None) -> None:
         from bot.api_keys_store import get_all_keys
         slots: list[_BaseSlot] = []
-        api_keys = get_all_keys()
-        for i, key in enumerate(api_keys):
-            slots.append(_ApiKeySlot(api_key=key, index=i))
+        api_entries = get_all_keys()
+        for i, entry in enumerate(api_entries):
+            slots.append(_ApiKeySlot(api_key=entry["key"], index=i, project_id=entry.get("project_id")))
         if not slots:
             sa_files = _load_sa_files()
             for i, f in enumerate(sa_files):
                 slots.append(_CredSlot(sa_path=f, index=i))
-        self._slots = slots
-        self._current_index = 0
+        if self._lock.locked():
+            self._slots = slots
+            self._current_index = 0
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+                async def _swap():
+                    async with self._lock:
+                        self._slots = slots
+                        self._current_index = 0
+                loop.create_task(_swap())
+            except RuntimeError:
+                self._slots = slots
+                self._current_index = 0
         if slots:
-            logger.info("Reloaded %d credential slot(s)", len(self._slots))
+            logger.info("Reloaded %d credential slot(s)", len(slots))
         else:
             logger.warning("reload_keys: all credentials removed — bot will reject requests")
 
@@ -339,24 +451,312 @@ class VertexAIService:
     def key_count(self) -> int:
         return len(self._slots)
 
-    def _get_next_available_slot(self, model: str) -> _BaseSlot | None:
-        """Return the ready slot with the most remaining capacity for model.
+    def get_slots_status(self) -> list[dict]:
+        """Return status info for each credential slot (for admin panel display)."""
+        from bot import api_keys_store
+        now = time.monotonic()
+        result = []
+        for slot in self._slots:
+            remaining = max(0.0, slot.cooldown_until - now)
+            if slot.auth_error:
+                status = "auth_error"
+            elif slot.active_requests > 0:
+                status = "active"
+            elif remaining > 0:
+                status = "cooldown"
+            else:
+                status = "ok"
+            last_used_ago = int(now - slot.last_used_at) if slot.last_used_at > 0 else None
+            key_masked = api_keys_store.mask_key(slot._api_key) if isinstance(slot, _ApiKeySlot) else None
+            sa_name = slot.sa_path.stem if isinstance(slot, _CredSlot) else None
+            has_project = slot.has_project if isinstance(slot, _ApiKeySlot) else True
+            project_id = slot._project_id if isinstance(slot, _ApiKeySlot) else (slot._project_id if isinstance(slot, _CredSlot) else None)
+            result.append({
+                "label": slot.label,
+                "key_masked": key_masked,
+                "sa_name": sa_name,
+                "type": "api_key" if isinstance(slot, _ApiKeySlot) else "service_account",
+                "has_project": has_project,
+                "project_id": project_id,
+                "status": status,
+                "cooldown_remaining": int(remaining),
+                "auth_error_msg": slot.auth_error_msg,
+                "active_requests": slot.active_requests,
+                "last_used_ago": last_used_ago,
+                "last_model": slot.last_model,
+                "total_ok": slot.total_ok,
+                "total_err": slot.total_err,
+                "req_flash": slot.requests_in_window_family("flash-image"),
+                "req_pro": slot.requests_in_window_family("pro-image"),
+                "req_veo": slot.requests_in_window_family("veo-"),
+                "req_lyria": slot.requests_in_window_family("lyria-"),
+                "qpm_flash": _qpm_for_model("flash-image"),
+                "qpm_pro": _qpm_for_model("pro-image"),
+                "qpm_veo": _qpm_for_model("veo-3.1"),
+                "qpm_lyria": _qpm_for_model("lyria-3"),
+            })
+        return result
 
-        'Ready' means: past cooldown_until AND has_capacity for this specific model.
-        Flash and Pro quotas on the same key are independent — a key saturated
-        with Flash requests can still serve Pro requests and vice-versa.
+    def get_slot_history(self, slot_index: int) -> list[dict]:
+        if 0 <= slot_index < len(self._slots):
+            return list(self._slots[slot_index].history)
+        return []
+
+    def _is_video_model(self, model: str) -> bool:
+        return model.startswith("veo-")
+
+    def _is_music_model(self, model: str) -> bool:
+        return model.startswith("lyria-")
+
+    def _filter_slots_for_model(self, model: str) -> list[_BaseSlot]:
+        usable = [s for s in self._slots if not s.auth_error]
+        if self._is_video_model(model):
+            with_project = [s for s in usable if (isinstance(s, _ApiKeySlot) and s.has_project) or isinstance(s, _CredSlot)]
+            if with_project:
+                return with_project
+        if self._is_music_model(model):
+            api_slots = [s for s in usable if isinstance(s, _ApiKeySlot)]
+            if api_slots:
+                return api_slots
+        return usable
+
+    async def generate_music(
+        self,
+        prompt: str,
+        model: str = "lyria-3-clip-preview",
+        user_id: int | None = None,
+        username: str = "",
+        image: bytes | None = None,
+    ) -> bytes:
+        if model not in MUSIC_MODELS:
+            model = "lyria-3-clip-preview"
+        async with self._semaphore:
+            return await self._generate_music_inner(
+                prompt=prompt,
+                model=model,
+                user_id=user_id,
+                username=username,
+                image=image,
+            )
+
+    async def _generate_music_inner(
+        self,
+        prompt: str,
+        model: str,
+        user_id: int | None,
+        username: str,
+        image: bytes | None = None,
+    ) -> bytes:
+        deadline = time.monotonic() + 300
+        started_at = time.monotonic()
+
+        while time.monotonic() < deadline:
+            async with self._lock:
+                slot = self._get_next_available_slot(model)
+            if slot is None:
+                earliest = self._earliest_ready_at(model)
+                now = time.monotonic()
+                wait = max(0.1, earliest - now)
+                if now + wait > deadline:
+                    break
+                await asyncio.sleep(wait + 0.1)
+                continue
+
+            slot.record_request(model)
+            slot.active_requests += 1
+            slot.last_used_at = time.monotonic()
+            slot.last_model = model
+
+            try:
+                if not isinstance(slot, _ApiKeySlot):
+                    raise GenerationError("Музыка пока поддерживается только с API-ключами")
+
+                mode_label = "image→music" if image else "text→music"
+                logger.info(
+                    "Music [%s]: trying '%s' model=%s prompt='%s'",
+                    mode_label, slot.label, model, prompt[:60],
+                )
+
+                music_bytes = await asyncio.to_thread(
+                    self._generate_music_with_gemini_api,
+                    slot,
+                    prompt,
+                    model,
+                    image,
+                )
+
+                if not music_bytes:
+                    raise GenerationError("Музыка сгенерирована, но аудиоданные недоступны")
+
+                duration_ms = int((time.monotonic() - started_at) * 1000)
+                slot.total_ok += 1
+                slot.record_history(
+                    user_id=user_id, username=username, prompt=prompt,
+                    model=model, status="ok", duration_ms=duration_ms,
+                )
+                logger.info(
+                    "Music OK: slot='%s' model=%s duration=%.1fs size=%.1f KB",
+                    slot.label, model, duration_ms / 1000, len(music_bytes) / 1024,
+                )
+                return music_bytes
+
+            except (SafetyFilterError, GenerationError):
+                raise
+            except Exception as exc:
+                slot.total_err += 1
+                duration_ms = int((time.monotonic() - started_at) * 1000)
+                logger.error("Music: slot '%s' error: %s", slot.label, repr(exc))
+
+                if _is_safety_error(exc):
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="safety", error=str(exc)[:200],
+                        duration_ms=duration_ms,
+                    )
+                    raise SafetyFilterError(str(exc))
+                if _is_server_error(exc) and not any(
+                    kw in str(exc).lower() for kw in ("429", "quota", "resource exhausted")
+                ):
+                    slot.cooldown_until = time.monotonic() + 15
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="server_error", error=str(exc)[:200],
+                        duration_ms=duration_ms,
+                    )
+                elif _is_retryable(exc):
+                    slot.mark_rate_limited()
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="rate_limit", error="429",
+                        duration_ms=duration_ms,
+                    )
+                elif _is_auth_error(exc):
+                    slot.reset_client()
+                    slot.auth_error = True
+                    slot.auth_error_msg = str(exc)[:120]
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="auth_error", error=str(exc)[:200],
+                        duration_ms=duration_ms,
+                    )
+                    self._check_and_alert_auth_errors()
+                else:
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="error", error=str(exc)[:200],
+                        duration_ms=duration_ms,
+                    )
+                    raise GenerationError(str(exc))
+            finally:
+                slot.active_requests = max(0, slot.active_requests - 1)
+
+        logger.error("Music deadline reached — all slots busy for model %s", model)
+        self._alert_quota_exhausted(model)
+        raise QuotaExceededError()
+
+    def _generate_music_with_gemini_api(
+        self,
+        slot: _ApiKeySlot,
+        prompt: str,
+        model: str,
+        image: bytes | None,
+    ) -> bytes:
+        from google.genai import types as genai_types
+
+        client = slot.get_video_client()
+        contents: Any
+        if image is not None:
+            contents = [
+                prompt,
+                genai_types.Part.from_bytes(data=image, mime_type="image/jpeg"),
+            ]
+        else:
+            contents = prompt
+
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=genai_types.GenerateContentConfig(
+                response_modalities=["AUDIO", "TEXT"],
+            ),
+        )
+
+        parts = getattr(response, "parts", None)
+        if not parts and getattr(response, "candidates", None):
+            candidate = response.candidates[0]
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) if content else None
+
+        if not parts:
+            raise GenerationError("Lyria не вернула аудио")
+
+        for part in parts:
+            inline_data = getattr(part, "inline_data", None) or getattr(part, "inlineData", None)
+            if inline_data is not None:
+                data = getattr(inline_data, "data", None)
+                if data:
+                    if isinstance(data, str):
+                        return base64.b64decode(data)
+                    return data
+
+        text_parts = [
+            getattr(part, "text", "")
+            for part in parts
+            if getattr(part, "text", None)
+        ]
+        details = " ".join(text_parts)[:300]
+        if details and _is_safety_error_text(details):
+            raise SafetyFilterError(details)
+        raise GenerationError(details or "Lyria не вернула аудиоданные")
+
+    def _get_next_available_slot(self, model: str) -> _BaseSlot | None:
+        """Return the next ready slot using round-robin rotation.
+
+        After each use the pointer advances so every key gets equal traffic.
+        'Ready' means: past cooldown_until AND has_capacity for this specific model
+        AND no permanent auth error.
+        Video/music models use the Gemini Developer API for API-key slots.
         """
-        ready = [s for s in self._slots if s.is_ready(model)]
-        if not ready:
+        usable = self._filter_slots_for_model(model)
+        if not usable:
             return None
-        # Prefer the slot with fewest requests in the window for this model
-        return min(ready, key=lambda s: s.requests_in_window(model))
+        n = len(usable)
+        for i in range(n):
+            idx = (self._current_index + i) % n
+            slot = usable[idx]
+            if slot.is_ready(model):
+                self._current_index = (idx + 1) % n
+                return slot
+        return None
 
     def _earliest_ready_at(self, model: str) -> float:
         """Monotonic timestamp when any slot will next be ready for model."""
-        if not self._slots:
+        usable = self._filter_slots_for_model(model)
+        if not usable:
             return float("inf")
-        return min(s.ready_at(model) for s in self._slots)
+        return min(s.ready_at(model) for s in usable)
+
+    def _check_and_alert_auth_errors(self) -> None:
+        from bot import admin_alerts
+        auth_err_slots = [s for s in self._slots if s.auth_error]
+        total = len(self._slots)
+        if not total:
+            return
+        err_details = [f"{s.label}: {s.auth_error_msg}" for s in auth_err_slots]
+        if len(auth_err_slots) == total:
+            _fire_alert(admin_alerts.alert_all_keys_auth_error(total, err_details))
+        elif len(auth_err_slots) >= 1:
+            _fire_alert(admin_alerts.alert_keys_degraded(total, len(auth_err_slots), err_details))
+
+    def _alert_quota_exhausted(self, model: str) -> None:
+        from bot import admin_alerts
+        auth_err_count = sum(1 for s in self._slots if s.auth_error)
+        total = len(self._slots)
+        if auth_err_count == total:
+            err_details = [f"{s.label}: {s.auth_error_msg}" for s in self._slots if s.auth_error]
+            _fire_alert(admin_alerts.alert_all_keys_auth_error(total, err_details))
+        else:
+            _fire_alert(admin_alerts.alert_all_keys_quota(total, model))
 
     async def generate_image(
         self,
@@ -365,9 +765,11 @@ class VertexAIService:
         model_override: str | None = None,
         aspect_ratio: str = "1:1",
         thinking_level: str = "low",
+        user_id: int | None = None,
+        username: str = "",
     ) -> bytes:
         model = model_override or self._settings.vertex_ai_model
-        return await self._try_all_keys(prompt, images, model, aspect_ratio, thinking_level)
+        return await self._try_all_keys(prompt, images, model, aspect_ratio, thinking_level, user_id=user_id, username=username)
 
     async def _try_all_keys(
         self,
@@ -376,6 +778,8 @@ class VertexAIService:
         model: str,
         aspect_ratio: str,
         thinking_level: str = "low",
+        user_id: int | None = None,
+        username: str = "",
     ) -> bytes:
         """Dispatch the request to the best available key, queuing if all are busy.
 
@@ -392,15 +796,19 @@ class VertexAIService:
         """
         text_retry_done = False
         current_prompt = prompt
-        deadline = time.monotonic() + 300  # 5-minute absolute deadline
+        deadline = time.monotonic() + 120  # 2-minute absolute deadline
 
         while time.monotonic() < deadline:
             async with self._lock:
                 slot = self._get_next_available_slot(model)
 
             if slot is not None:
-                # Reserve one quota slot in the per-model sliding window before the call.
                 slot.record_request(model)
+                slot.active_requests += 1
+                slot.last_used_at = time.monotonic()
+                slot.last_model = model
+                _exc_to_raise: Exception | None = None
+                _t0 = time.monotonic()
                 try:
                     logger.info(
                         "Trying '%s' [%d/%d used for %s], prompt='%s'",
@@ -410,39 +818,101 @@ class VertexAIService:
                         model,
                         current_prompt[:60],
                     )
-                    result = await self._call_api(slot, current_prompt, images, model, aspect_ratio, thinking_level)
+                    result = await asyncio.wait_for(
+                        self._call_api(slot, current_prompt, images, model, aspect_ratio, thinking_level),
+                        timeout=180,
+                    )
+                    slot.total_ok += 1
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="ok",
+                        duration_ms=int((time.monotonic() - _t0) * 1000),
+                    )
                     return result
+                except asyncio.TimeoutError:
+                    slot.total_err += 1
+                    slot.mark_rate_limited()
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="timeout", error="180s timeout",
+                        duration_ms=int((time.monotonic() - _t0) * 1000),
+                    )
+                    logger.warning(
+                        "Slot '%s' timed out (180s) for '%s', rotating to next key...",
+                        slot.label, current_prompt[:60],
+                    )
                 except Exception as exc:
+                    slot.total_err += 1
+                    _dur = int((time.monotonic() - _t0) * 1000)
                     logger.error(
                         "Slot '%s' error for '%s': %s",
                         slot.label, current_prompt[:60], repr(exc),
                     )
                     if _is_safety_error(exc):
-                        raise SafetyFilterError(str(exc)) from exc
-                    if _is_retryable(exc):
+                        slot.record_history(
+                            user_id=user_id, username=username, prompt=prompt,
+                            model=model, status="safety", error=str(exc)[:200],
+                            duration_ms=_dur,
+                        )
+                        _exc_to_raise = SafetyFilterError(str(exc))
+                    elif _is_server_error(exc) and not any(
+                        kw in str(exc).lower() for kw in ("429", "quota", "resource exhausted", "rate limit")
+                    ):
+                        cooldown_sec = 15
+                        slot.record_history(
+                            user_id=user_id, username=username, prompt=prompt,
+                            model=model, status="server_error", error=str(exc)[:200],
+                            duration_ms=_dur,
+                        )
+                        slot.cooldown_until = time.monotonic() + cooldown_sec
+                        logger.warning(
+                            "Slot '%s' returned 5xx server error — %ds cooldown, rotating...",
+                            slot.label, cooldown_sec,
+                        )
+                    elif _is_retryable(exc):
+                        slot.record_history(
+                            user_id=user_id, username=username, prompt=prompt,
+                            model=model, status="rate_limit", error="429",
+                            duration_ms=_dur,
+                        )
                         slot.mark_rate_limited()
                         logger.warning(
                             "Slot '%s' returned 429 — 60s cooldown applied, rotating...",
                             slot.label,
                         )
-                        continue
-                    if _is_auth_error(exc):
+                    elif _is_auth_error(exc):
+                        slot.record_history(
+                            user_id=user_id, username=username, prompt=prompt,
+                            model=model, status="auth_error", error=str(exc)[:200],
+                            duration_ms=_dur,
+                        )
                         slot.reset_client()
+                        slot.auth_error = True
+                        slot.auth_error_msg = str(exc)[:120]
                         logger.warning(
                             "Slot '%s' auth error, key invalid — skipping: %s",
                             slot.label, exc,
                         )
-                        continue
-                    if _is_model_error(exc):
+                        self._check_and_alert_auth_errors()
+                    elif _is_model_error(exc):
+                        slot.record_history(
+                            user_id=user_id, username=username, prompt=prompt,
+                            model=model, status="error", error=str(exc)[:200],
+                            duration_ms=_dur,
+                        )
+                        slot.cooldown_until = time.monotonic() + 300
                         logger.warning(
-                            "Slot '%s' returned 400, model issue — skipping...",
+                            "Slot '%s' returned 400 INVALID_ARGUMENT — 5min cooldown applied, rotating...",
                             slot.label,
                         )
-                        continue
-                    # Model returned text instead of image — retry once with explicit prompt
-                    if isinstance(exc, GenerationError) and "вернула текст" in str(exc):
+                    elif isinstance(exc, GenerationError) and "вернула текст" in str(exc):
                         if not text_retry_done:
                             text_retry_done = True
+                            slot.record_history(
+                                user_id=user_id, username=username, prompt=prompt,
+                                model=model, status="text_retry", error="модель вернула текст",
+                                duration_ms=_dur,
+                            )
                             current_prompt = (
                                 f"Generate a high-quality image of: {prompt}. "
                                 "Important: output must be an IMAGE, not text."
@@ -451,9 +921,24 @@ class VertexAIService:
                                 "Model returned text for '%s', retrying with enhanced prompt...",
                                 prompt[:40],
                             )
-                            continue
-                        raise AmbiguousPromptError(str(exc)) from exc
-                    raise GenerationError(str(exc)) from exc
+                        else:
+                            slot.record_history(
+                                user_id=user_id, username=username, prompt=prompt,
+                                model=model, status="error", error=str(exc)[:200],
+                                duration_ms=_dur,
+                            )
+                            _exc_to_raise = AmbiguousPromptError(str(exc))
+                    else:
+                        slot.record_history(
+                            user_id=user_id, username=username, prompt=prompt,
+                            model=model, status="error", error=str(exc)[:200],
+                            duration_ms=_dur,
+                        )
+                        _exc_to_raise = GenerationError(str(exc))
+                finally:
+                    slot.active_requests = max(0, slot.active_requests - 1)
+                if _exc_to_raise is not None:
+                    raise _exc_to_raise
             else:
                 # All slots are at capacity or in cooldown — wait precisely.
                 earliest = self._earliest_ready_at(model)
@@ -468,6 +953,7 @@ class VertexAIService:
                 await asyncio.sleep(wait + 0.1)
 
         logger.error("Deadline reached — all credential slots busy for model %s", model)
+        self._alert_quota_exhausted(model)
         raise QuotaExceededError()
 
     async def _call_api(
@@ -542,67 +1028,411 @@ class VertexAIService:
 
         raise GenerationError("The model did not return an image part.")
 
-    CHAT_MODEL = "gemini-3.1-flash-lite-preview"
+    async def generate_video(
+        self,
+        prompt: str,
+        model: str = "veo-3.1-generate-001",
+        aspect_ratio: str = "16:9",
+        duration_seconds: int = 8,
+        resolution: str = "720p",
+        person_generation: str = "allow_all",
+        generate_audio: bool = True,
+        user_id: int | None = None,
+        username: str = "",
+        on_progress: Any = None,
+        image: bytes | None = None,
+    ) -> bytes:
+        from google.genai import types as genai_types
 
-    async def chat_text(self, contents: list[Any]) -> str:
-        n = len(self._slots)
-        tried_keys: set[int] = set()
+        if model not in VIDEO_MODELS:
+            model = "veo-3.1-generate-001"
 
-        while len(tried_keys) < n:
+        if aspect_ratio not in ("16:9", "9:16"):
+            aspect_ratio = "16:9"
+
+        if duration_seconds not in (4, 6, 8):
+            duration_seconds = 8
+
+        if image is not None:
+            duration_seconds = 8
+
+        if resolution not in ("720p", "1080p", "4k"):
+            resolution = "720p"
+
+        async with self._semaphore:
+            return await self._generate_video_inner(
+                prompt=prompt, model=model,
+                aspect_ratio=aspect_ratio, duration_seconds=duration_seconds,
+                resolution=resolution, person_generation=person_generation,
+                generate_audio=generate_audio,
+                user_id=user_id, username=username, on_progress=on_progress,
+                image=image,
+            )
+
+    async def _generate_video_inner(
+        self,
+        prompt: str,
+        model: str,
+        aspect_ratio: str,
+        duration_seconds: int,
+        resolution: str,
+        person_generation: str,
+        generate_audio: bool,
+        user_id: int | None,
+        username: str,
+        on_progress: Any,
+        image: bytes | None = None,
+    ) -> bytes:
+        deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
+        _t0 = time.monotonic()
+
+        while time.monotonic() < deadline:
             async with self._lock:
-                slot = self._get_next_available_slot(self.CHAT_MODEL)
-
+                slot = self._get_next_available_slot(model)
             if slot is None:
-                break
-            if slot.index in tried_keys:
-                break
-            tried_keys.add(slot.index)
+                earliest = self._earliest_ready_at(model)
+                now = time.monotonic()
+                wait = max(0.1, earliest - now)
+                if now + wait > deadline:
+                    break
+                await asyncio.sleep(wait + 0.1)
+                continue
+
+            slot.record_request(model)
+            slot.active_requests += 1
+            slot.last_used_at = time.monotonic()
+            slot.last_model = model
 
             try:
-                loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(
-                    None, self._sync_chat, slot, contents
-                )
-            except Exception as exc:
-                if _is_retryable(exc):
-                    slot.mark_rate_limited()
-                    logger.warning("Chat: slot '%s' returned 429, rotating...", slot.label)
-                    continue
-                if _is_auth_error(exc):
-                    slot.reset_client()
-                    logger.warning("Chat: slot '%s' auth error, key invalid — skipping: %s", slot.label, exc)
-                    continue
-                if _is_model_error(exc):
-                    logger.warning("Chat: slot '%s' returned 400, model issue — skipping", slot.label)
-                    continue
-                raise GenerationError(str(exc)) from exc
+                if isinstance(slot, _ApiKeySlot):
+                    pass
+                else:
+                    raise GenerationError("Видео пока поддерживается только с API-ключами")
 
+                _mode = "image→video" if image else "text→video"
+                logger.info(
+                    "Video [%s]: trying '%s' model=%s prompt='%s'",
+                    _mode, slot.label, model, prompt[:60],
+                )
+
+                video_bytes = await asyncio.to_thread(
+                    self._generate_video_with_gemini_api,
+                    slot,
+                    prompt,
+                    model,
+                    aspect_ratio,
+                    duration_seconds,
+                    resolution,
+                    person_generation,
+                    generate_audio,
+                    deadline,
+                    on_progress,
+                    image,
+                )
+
+                if not video_bytes:
+                    raise GenerationError("Видео сгенерировано, но данные недоступны")
+
+                _dur = int((time.monotonic() - _t0) * 1000)
+                slot.total_ok += 1
+                slot.record_history(
+                    user_id=user_id, username=username, prompt=prompt,
+                    model=model, status="ok", duration_ms=_dur,
+                )
+                logger.info(
+                    "Video OK: slot='%s' model=%s duration=%.1fs size=%.1f KB",
+                    slot.label, model, _dur / 1000, len(video_bytes) / 1024,
+                )
+                return video_bytes
+
+            except (SafetyFilterError, GenerationError):
+                raise
+            except Exception as exc:
+                slot.total_err += 1
+                _dur = int((time.monotonic() - _t0) * 1000)
+                logger.error("Video: slot '%s' error: %s", slot.label, repr(exc))
+
+                if _is_safety_error(exc):
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="safety", error=str(exc)[:200],
+                        duration_ms=_dur,
+                    )
+                    raise SafetyFilterError(str(exc))
+                elif _is_server_error(exc) and not any(
+                    kw in str(exc).lower() for kw in ("429", "quota", "resource exhausted")
+                ):
+                    slot.cooldown_until = time.monotonic() + 15
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="server_error", error=str(exc)[:200],
+                        duration_ms=_dur,
+                    )
+                elif _is_retryable(exc):
+                    slot.mark_rate_limited()
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="rate_limit", error="429",
+                        duration_ms=_dur,
+                    )
+                elif _is_auth_error(exc):
+                    slot.reset_client()
+                    slot.auth_error = True
+                    slot.auth_error_msg = str(exc)[:120]
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="auth_error", error=str(exc)[:200],
+                        duration_ms=_dur,
+                    )
+                else:
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="error", error=str(exc)[:200],
+                        duration_ms=_dur,
+                    )
+                    raise GenerationError(str(exc))
+            finally:
+                slot.active_requests = max(0, slot.active_requests - 1)
+
+        logger.error("Video deadline reached — all slots busy for model %s", model)
+        self._alert_quota_exhausted(model)
         raise QuotaExceededError()
 
-    def _sync_chat(self, slot: _BaseSlot, contents: list[Any]) -> str:
+    def _generate_video_with_gemini_api(
+        self,
+        slot: _ApiKeySlot,
+        prompt: str,
+        model: str,
+        aspect_ratio: str,
+        duration_seconds: int,
+        resolution: str,
+        person_generation: str,
+        generate_audio: bool,
+        deadline: float,
+        on_progress: Any,
+        image: bytes | None,
+    ) -> bytes:
+        from google.genai import types as genai_types
+
+        client = slot.get_video_client()
+        api_resolution = "1080p" if resolution == "4k" else resolution
+        api_person_generation = person_generation
+        if api_person_generation not in ("dont_allow", "allow_adult"):
+            api_person_generation = "allow_adult"
+        config = genai_types.GenerateVideosConfig(
+            number_of_videos=1,
+            duration_seconds=duration_seconds,
+            aspect_ratio=aspect_ratio,
+            resolution=api_resolution,
+            person_generation=api_person_generation,
+            enhance_prompt=True,
+            generate_audio=generate_audio,
+        )
+        input_image = (
+            genai_types.Image(image_bytes=image, mime_type="image/jpeg")
+            if image is not None
+            else None
+        )
+
+        operation = client.models.generate_videos(
+            model=model,
+            prompt=prompt,
+            image=input_image,
+            config=config,
+        )
+
+        poll_count = 0
+        while not operation.done:
+            if time.monotonic() > deadline:
+                raise GenerationError("Таймаут ожидания генерации видео")
+            poll_count += 1
+            if on_progress:
+                try:
+                    on_progress(poll_count * VIDEO_POLL_INTERVAL)
+                except Exception:
+                    pass
+            time.sleep(VIDEO_POLL_INTERVAL)
+            operation = client.operations.get(operation=operation)
+
+        if operation.error:
+            err_msg = operation.error.get("message", str(operation.error))
+            if _is_safety_error_text(err_msg):
+                raise SafetyFilterError(err_msg)
+            raise GenerationError(f"Gemini Video API error: {err_msg[:300]}")
+
+        result = operation.result or operation.response
+        generated_videos = result.generated_videos if result else None
+        if not generated_videos:
+            reasons = []
+            if result:
+                reasons = result.rai_media_filtered_reasons or []
+            if reasons:
+                msg = "; ".join(reasons)
+                if _is_safety_error_text(msg):
+                    raise SafetyFilterError(msg)
+                raise GenerationError(f"Gemini Video API filtered response: {msg[:300]}")
+            raise GenerationError("Модель не вернула видео")
+
+        generated_video = generated_videos[0]
+        video = generated_video.video
+        if video and video.video_bytes:
+            return video.video_bytes
+
+        return client.files.download(file=generated_video)
+
+    CHAT_MODEL = "gemini-3.1-pro-preview"
+    SEARCH_MODEL = "gemini-3.1-flash-lite-preview"
+
+    async def chat_text(
+        self,
+        contents: list[Any],
+        model_override: str | None = None,
+        on_thought: Any = None,
+        use_search: bool = False,
+    ) -> str:
+        """Send a chat request with the same key-rotation and wait logic as image generation.
+
+        on_thought:  optional callable(str) — called for each thinking chunk.
+        use_search:  enable Google Search grounding (only when actually needed for trends).
+        """
+        model = model_override or self.CHAT_MODEL
+        deadline = time.monotonic() + 300  # 5-minute absolute deadline
+
+        while time.monotonic() < deadline:
+            async with self._lock:
+                slot = self._get_next_available_slot(model)
+
+            if slot is not None:
+                slot.record_request(model)
+                slot.active_requests += 1
+                slot.last_used_at = time.monotonic()
+                slot.last_model = model
+                _chat_exc: Exception | None = None
+                try:
+                    logger.info(
+                        "Chat: trying '%s' [%d/%d used for %s] search=%s",
+                        slot.label,
+                        slot.requests_in_window(model),
+                        _qpm_for_model(model),
+                        model,
+                        use_search,
+                    )
+                    loop = asyncio.get_running_loop()
+                    import functools
+                    result = await loop.run_in_executor(
+                        None, functools.partial(self._sync_chat, slot, contents, model, on_thought, use_search)
+                    )
+                    slot.total_ok += 1
+                    return result
+                except Exception as exc:
+                    slot.total_err += 1
+                    logger.error("Chat: slot '%s' error: %s", slot.label, repr(exc))
+                    if _is_server_error(exc) and not any(
+                        kw in str(exc).lower() for kw in ("429", "quota", "resource exhausted", "rate limit")
+                    ):
+                        slot.cooldown_until = time.monotonic() + 15
+                        logger.warning(
+                            "Chat: slot '%s' returned 5xx server error — 15s cooldown, rotating...",
+                            slot.label,
+                        )
+                    elif _is_retryable(exc):
+                        slot.mark_rate_limited()
+                        logger.warning(
+                            "Chat: slot '%s' returned 429 — 60s cooldown, rotating...",
+                            slot.label,
+                        )
+                    elif _is_auth_error(exc):
+                        slot.reset_client()
+                        slot.auth_error = True
+                        slot.auth_error_msg = str(exc)[:120]
+                        logger.warning(
+                            "Chat: slot '%s' auth error, key invalid — skipping: %s",
+                            slot.label, exc,
+                        )
+                        self._check_and_alert_auth_errors()
+                    elif _is_model_error(exc):
+                        slot.cooldown_until = time.monotonic() + 300
+                        logger.warning(
+                            "Chat: slot '%s' returned 400 INVALID_ARGUMENT — 5min cooldown applied, rotating...",
+                            slot.label,
+                        )
+                    else:
+                        _chat_exc = GenerationError(str(exc))
+                finally:
+                    slot.active_requests = max(0, slot.active_requests - 1)
+                if _chat_exc is not None:
+                    raise _chat_exc
+            else:
+                earliest = self._earliest_ready_at(model)
+                now = time.monotonic()
+                wait = max(0.1, earliest - now)
+                if now + wait > deadline:
+                    break
+                logger.info(
+                    "Chat: all %d slot(s) at capacity for %s; waiting %.1fs...",
+                    len(self._slots), model, wait,
+                )
+                await asyncio.sleep(wait + 0.1)
+
+        logger.error("Chat: deadline reached — all slots busy for %s", model)
+        self._alert_quota_exhausted(model)
+        raise QuotaExceededError()
+
+    def _sync_chat(
+        self,
+        slot: _BaseSlot,
+        contents: list[Any],
+        model: str | None = None,
+        on_thought: Any = None,
+        use_search: bool = False,
+    ) -> str:
         from google.genai import types as genai_types
 
         client = slot.get_client()
+        use_model = model or self.CHAT_MODEL
+        m_lower = use_model.lower()
 
-        config = genai_types.GenerateContentConfig(
-            temperature=1,
-            top_p=0.95,
-            seed=0,
-            max_output_tokens=65535,
-            safety_settings=_get_safety_settings(),
-            thinking_config=genai_types.ThinkingConfig(thinking_level="LOW"),
-        )
+        config_kwargs: dict[str, Any] = {
+            "temperature": 1,
+            "top_p": 0.95,
+            "safety_settings": _get_safety_settings(),
+        }
+
+        # Thinking: only for full Flash or Pro models — NOT for Lite variants
+        # (Lite models don't support thinking_config; sending it causes 400 INVALID_ARGUMENT)
+        supports_thinking = ("flash" in m_lower and "lite" not in m_lower) or "pro" in m_lower
+        if supports_thinking:
+            config_kwargs["thinking_config"] = genai_types.ThinkingConfig(thinking_budget=8192)
+
+        # Google Search: only when caller explicitly requests it (trend search)
+        # Enabling it unconditionally wastes quota and may cause 400 on unsupported models
+        if use_search:
+            config_kwargs["tools"] = [genai_types.Tool(google_search=genai_types.GoogleSearch())]
+
+        config = genai_types.GenerateContentConfig(**config_kwargs)
 
         text_parts: list[str] = []
         for chunk in client.models.generate_content_stream(
-            model=self.CHAT_MODEL,
+            model=use_model,
             contents=contents,
             config=config,
         ):
             if not chunk.candidates:
                 continue
-            for part in chunk.candidates[0].content.parts:
-                if getattr(part, "text", None):
-                    text_parts.append(part.text)
+            content = chunk.candidates[0].content
+            if content is None:
+                continue
+            for part in (content.parts or []):
+                txt = getattr(part, "text", None)
+                if not txt:
+                    continue
+                if getattr(part, "thought", False):
+                    if on_thought is not None:
+                        try:
+                            on_thought(txt)
+                        except Exception:
+                            pass
+                else:
+                    text_parts.append(txt)
 
         return "".join(text_parts) if text_parts else ""

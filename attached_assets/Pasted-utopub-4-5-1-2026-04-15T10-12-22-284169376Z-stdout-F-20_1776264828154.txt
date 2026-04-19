@@ -1,0 +1,26 @@
+utopub] шаг 4/5 — загружаю 1 доп. фото...
+2026-04-15T10:12:22.284169376Z stdout F 2026-04-15 13:12:22 [INFO] bot.autopub.generator — [autopub gen] TG upload OK: file_id=AgACAgIAAyEGAATpJeOf...
+2026-04-15T10:12:22.080955994Z stdout F 2026-04-15 13:12:22 [INFO] bot.admin_alerts — admin_alerts: alert sent to admin
+2026-04-15T10:12:21.988954614Z stdout F 2026-04-15 13:12:21 [INFO] bot.autopub.generator — [autopub gen] загружаю черновик в TG лог-канал -1003911574431...
+2026-04-15T10:12:21.988945892Z stdout F 2026-04-15 13:12:21 [INFO] bot.autopub.scheduler — [autopub] шаг 4/5 — загружаю 2 фото в Telegram (лог-канал)...
+2026-04-15T10:12:21.988778368Z stdout F 2026-04-15 13:12:21 [INFO] bot.autopub.scheduler — [autopub] шаг 3/5 OK — 2 изображений, 3457.9 KB (599.5s)
+2026-04-15T10:12:21.987968019Z stdout F 2026-04-15 13:12:21 [WARNING] bot.autopub.generator — [autopub gen] изображение 1/3 FAILED — пропускаю
+2026-04-15T10:12:21.98796408Z stdout F 2026-04-15 13:12:21 [ERROR] bot.autopub.generator — [autopub gen] ошибка генерации изображения: Vertex AI quota exceeded after maximum retries.
+2026-04-15T10:12:21.987958811Z stdout F 2026-04-15 13:12:21 [ERROR] bot.services.vertex_ai_service — Deadline reached — all credential slots busy for model gemini-3.1-flash-image-preview
+2026-04-15T10:12:21.987929924Z stdout F 2026-04-15 13:12:21 [WARNING] bot.services.vertex_ai_service — Slot 'api_key_1' returned 429 — 60s cooldown applied, rotating...
+2026-04-15T10:12:21.98721968Z stdout F 2026-04-15 13:12:21 [WARNING] bot.services.vertex_ai_service — Account 'api_key_1' rate-limited, cooldown +60s
+2026-04-15T10:12:21.987182864Z stdout F 2026-04-15 13:12:21 [ERROR] bot.services.vertex_ai_service — Slot 'api_key_1' error for 'Editorial lifestyle photography of a cozy winter evening, a ': ServerError("503 UNAVAILABLE. {'error': {'code': 503, 'message': 'The service is currently unavailable.', 'status': 'UNAVAILABLE'}}")
+2026-04-15T10:12:21.985996581Z stdout F 2026-04-15 13:12:21 [INFO] httpx — HTTP Request: POST https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-3.1-flash-image-preview:streamGenerateContent?alt=sse "HTTP/1.1 503 Service Unavailable"
+2026-04-15T10:03:26.0700857Z stdout F 2026-04-15 13:03:26 [INFO] bot.autopub.generator — [autopub gen] изображение 2/3 OK — 1714.3 KB
+2026-04-15T10:02:50.242292896Z stdout F 2026-04-15 13:02:50 [INFO] bot.autopub.generator — [autopub gen] изображение 3/3 OK — 1743.6 KB
+2026-04-15T10:02:42.215270468Z stdout F 2026-04-15 13:02:42 [INFO] httpx — HTTP Request: POST https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-3.1-flash-image-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-04-15T10:02:29.686185849Z stdout F 2026-04-15 13:02:29 [INFO] httpx — HTTP Request: POST https://aiplatform.googleapis.com/v1beta1/publishers/google/models/gemini-3.1-flash-image-preview:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-04-15T10:02:22.498973487Z stdout F 2026-04-15 13:02:22 [INFO] bot.services.vertex_ai_service — Trying 'api_key_3' [1/5 used for gemini-3.1-flash-image-preview], prompt='Editorial lifestyle photography of a cozy winter evening, a '
+2026-04-15T10:02:22.498969762Z stdout F 2026-04-15 13:02:22 [INFO] bot.autopub.generator — [autopub gen] генерирую изображение, модель=gemini-3.1-flash-image-preview
+2026-04-15T10:02:22.498965846Z stdout F 2026-04-15 13:02:22 [INFO] bot.autopub.generator — [autopub gen] генерирую изображение 3/3...
+2026-04-15T10:02:22.498960755Z stdout F 2026-04-15 13:02:22 [INFO] bot.services.vertex_ai_service — Trying 'api_key_2' [1/5 used for gemini-3.1-flash-image-preview], prompt='Editorial lifestyle photography of a cozy winter evening, a '
+2026-04-15T10:02:22.498933619Z stdout F 2026-04-15 13:02:22 [INFO] bot.autopub.generator — [autopub gen] генерирую изображение, модель=gemini-3.1-flash-image-preview
+2026-04-15T10:02:22.498579667Z stdout F 2026-04-15 13:02:22 [INFO] bot.autopub.generator — [autopub gen] генерирую изображение 2/3...
+2026-04-15T10:02:22.498575662Z stdout F 2026-04-15 13:02:22 [INFO] bot.services.vertex_ai_service — Trying 'api_key_1' [1/5 used for gemini-3.1-flash-image-preview], prompt='Editorial lifestyle photography of a cozy winter evening, a '
+2026-04-15T10:02:22.498572237Z stdout F 2026-04-15 13:02:22 [INFO] bot.autopub.generator — [autopub gen] генерирую изображение, модель=gemini-3.1-flash-image-preview
+2026-04-15T10:02:22.498566343Z stdout F 2026-04-15 13:02:22 [INFO] bot.autopub.generator — [autopub gen] генерирую изображение 1/3...
