@@ -26,6 +26,7 @@ from bot.user_settings import (
     set_active_task, clear_active_task, increment_generations,
     AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS,
     is_blocked, has_credits, is_video_model, get_video_credits_cost,
+    is_music_model, get_music_credits_cost,
 )
 from bot.keyboards import BTN_MENU, BTN_STOP, BTN_SETTINGS, BTN_CHAT
 from bot.log_channel import log_generation
@@ -80,6 +81,10 @@ def _prompt_to_filename(prompt: str, max_words: int = 6) -> str:
     slug = "_".join(words) if words else "image"
     slug = slug[:60]
     return f"{slug}.png"
+
+
+def _prompt_to_audio_filename(prompt: str) -> str:
+    return _prompt_to_filename(prompt).replace(".png", ".mp3")
 
 
 def _upscale_image(image_bytes: bytes, max_side: int) -> bytes:
@@ -210,7 +215,13 @@ async def handle_photo_prompt(
         return
 
     settings = get_user_settings(uid)
-    credits_cost = 2 if settings.get("resolution") == "4k" else 1
+    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
+    if is_music_model(user_model):
+        credits_cost = get_music_credits_cost(user_model)
+    elif is_video_model(user_model):
+        credits_cost = get_video_credits_cost(user_model)
+    else:
+        credits_cost = 2 if settings.get("resolution") == "4k" else 1
 
     if not has_credits(uid, credits_cost):
         msg = (
@@ -219,13 +230,100 @@ async def handle_photo_prompt(
             "Для продолжения работы приобретите пополнение кредитов."
             if credits_cost == 1 else
             "💳 <b>Недостаточно кредитов</b>\n\n"
-            "Генерация в разрешении <b>4K стоит 2 кредита</b>.\n"
-            "Понизьте разрешение в настройках или пополните баланс."
+            f"Генерация выбранной моделью стоит <b>{credits_cost} кредитов</b>.\n"
+            "Пополните баланс для продолжения."
         )
         await message.reply(msg, parse_mode="HTML")
         return
 
-    user_model = settings.get("model", "gemini-3.1-flash-image-preview")
+    if is_music_model(user_model):
+        caption = _collect_caption(photo_messages)
+        if not caption:
+            await message.reply(
+                "📷 Фото получено! Добавьте описание музыки подписью к фото.\n\n"
+                "Например: <i>Атмосферный синтвейв по настроению этого изображения</i>",
+                parse_mode="HTML",
+            )
+            return
+
+        bot_obj: Bot = message.bot  # type: ignore[assignment]
+        await _dismiss_menu(bot_obj, uid)
+        model_info = AVAILABLE_MODELS.get(user_model, {})
+        model_label = model_info.get("label", user_model)
+        duration_label = model_info.get("duration_label", "аудио")
+        base_text = (
+            f"🎵 <b>Генерирую музыку по фото…</b>\n"
+            f"🤖 {model_label}\n"
+            f"⏱ {duration_label} • MP3\n"
+            f"<i>{caption[:100]}{'…' if len(caption) > 100 else ''}</i>"
+        )
+        processing_msg = await message.reply(
+            f"{base_text}\n\n◐ <b>Обработка — 0 сек.</b>",
+            parse_mode="HTML",
+        )
+        animator = ProgressAnimator(processing_msg, base_text)
+        animator.start()
+        _uname = message.from_user.username or message.from_user.first_name or ""
+
+        async def _do_img2music() -> bytes:
+            all_photo_bytes = await _download_photos(bot_obj, photo_messages)
+            return await vertex_service.generate_music(
+                prompt=caption,
+                model=user_model,
+                user_id=uid,
+                username=_uname,
+                image=all_photo_bytes[0],
+            )
+
+        gen_task = asyncio.create_task(_do_img2music())
+        set_active_task(uid, gen_task)
+        try:
+            audio_bytes = await gen_task
+            await animator.stop()
+            clear_active_task(uid)
+            audio_file = BufferedInputFile(file=audio_bytes, filename=_prompt_to_audio_filename(caption))
+            await message.reply_audio(
+                audio=audio_file,
+                caption=f"✅ Музыка по фото готова!\n<i>{caption[:200]}</i>",
+                parse_mode="HTML",
+            )
+            increment_generations(uid, message.from_user.first_name or "", platform="tg", credits_cost=credits_cost)
+            try:
+                await bot_obj.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)
+            except Exception:
+                pass
+        except asyncio.CancelledError:
+            await animator.stop()
+            clear_active_task(uid)
+            try:
+                await processing_msg.edit_text("⛔ <b>Генерация отменена.</b>", parse_mode="HTML")
+            except Exception:
+                pass
+        except SafetyFilterError as exc:
+            await animator.stop()
+            clear_active_task(uid)
+            await processing_msg.edit_text(
+                f"🚫 <b>Запрос заблокирован фильтрами безопасности</b>\n\n{exc.user_message}",
+                parse_mode="HTML",
+            )
+        except QuotaExceededError:
+            await animator.stop()
+            clear_active_task(uid)
+            await processing_msg.edit_text(
+                f"Модель <b>{model_label}</b> сейчас перегружена 😔\n\nПопробуйте через пару минут.",
+                parse_mode="HTML",
+                reply_markup=_suggest_switch_keyboard(user_model),
+            )
+        except Exception as exc:
+            await animator.stop()
+            clear_active_task(uid)
+            logger.exception("Error image→music '%s': %s", caption[:60], exc)
+            await processing_msg.edit_text(
+                "Не удалось сгенерировать музыку по фото 😔\n\nПопробуйте ещё раз.",
+                parse_mode="HTML",
+                reply_markup=_suggest_switch_keyboard(user_model),
+            )
+        return
 
     if is_video_model(user_model):
         from bot.user_settings import video_supports_image, video_supports_audio, get_video_credits_cost as _vcc
@@ -553,9 +651,12 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
     settings = get_user_settings(uid)
     user_model = settings.get("model", "gemini-3.1-flash-image-preview")
     _is_video = is_video_model(user_model)
+    _is_music = is_music_model(user_model)
 
     if _is_video:
         credits_cost = get_video_credits_cost(user_model)
+    elif _is_music:
+        credits_cost = get_music_credits_cost(user_model)
     else:
         credits_cost = 2 if settings.get("resolution") == "4k" else 1
 
@@ -563,7 +664,7 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
         cost_label = f"{credits_cost} кредитов" if credits_cost > 1 else "1 кредит"
         msg = (
             f"💳 <b>Недостаточно кредитов</b>\n\n"
-            f"Генерация {'видео' if _is_video else 'изображения'} стоит <b>{cost_label}</b>.\n"
+            f"Генерация {'видео' if _is_video else 'музыки' if _is_music else 'изображения'} стоит <b>{cost_label}</b>.\n"
             "Пополните баланс для продолжения."
         )
         await message.reply(msg, parse_mode="HTML")
@@ -579,12 +680,12 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
         queue_note = await message.reply(
             "⏳ <b>Ваш запрос поставлен в очередь.</b>\n"
             "Система сейчас обрабатывает максимальное количество одновременных запросов. "
-            f"{'Видео' if _is_video else 'Изображение'} будет сгенерировано в ближайшее время.",
+            f"{'Видео' if _is_video else 'Музыка' if _is_music else 'Изображение'} будет сгенерировано в ближайшее время.",
             parse_mode="HTML",
         )
         queue_msg_id = queue_note.message_id
 
-    gen_type = "видео" if _is_video else "изображение"
+    gen_type = "видео" if _is_video else "музыку" if _is_music else "изображение"
     base_text = (
         f"🎨 <b>Генерирую {gen_type}…</b>\n"
         f"🤖 {model_label}\n"
@@ -594,6 +695,9 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
         dur = settings.get("video_duration", 8)
         vres = settings.get("video_resolution", "720p")
         base_text += f"\n⏱ {dur} сек • 📺 {vres}"
+    elif _is_music:
+        duration_label = AVAILABLE_MODELS.get(user_model, {}).get("duration_label", "MP3")
+        base_text += f"\n⏱ {duration_label} • MP3"
 
     processing_msg = await message.reply(
         f"{base_text}\n\n◐ <b>Обработка — 0 сек.</b>",
@@ -625,6 +729,16 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
             )
 
         gen_task = asyncio.create_task(_do_video_generate())
+    elif _is_music:
+        async def _do_music_generate() -> bytes:
+            return await vertex_service.generate_music(
+                prompt=prompt,
+                model=user_model,
+                user_id=uid,
+                username=_uname_t,
+            )
+
+        gen_task = asyncio.create_task(_do_music_generate())
     else:
         resolution = settings.get("resolution", "original")
         max_side = RESOLUTIONS.get(resolution, {}).get("max_side", 0)
@@ -664,6 +778,15 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
                 caption=result_caption,
                 parse_mode="HTML",
             )
+        elif _is_music:
+            fname = _prompt_to_audio_filename(prompt)
+            result_caption = f"✅ Ваша музыка готова!\n<i>{prompt[:200]}</i>"
+            audio_file = BufferedInputFile(file=result_bytes, filename=fname)
+            await message.reply_audio(
+                audio=audio_file,
+                caption=result_caption,
+                parse_mode="HTML",
+            )
         else:
             send_mode = settings.get("send_mode", "photo")
             fname = _prompt_to_filename(prompt)
@@ -685,7 +808,7 @@ async def handle_text_prompt(message: Message, vertex_service: VertexAIService) 
                 )
 
         increment_generations(uid, message.from_user.first_name or "", platform="tg", credits_cost=credits_cost)
-        if not _is_video:
+        if not _is_video and not _is_music:
             asyncio.create_task(log_generation(
                 image_bytes=result_bytes,
                 prompt=prompt,

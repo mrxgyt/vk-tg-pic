@@ -19,6 +19,7 @@ from bot.user_settings import (
     has_chat_quota, increment_chat_count,
     get_chat_daily_count, get_chat_daily_limit,
     is_video_model, get_video_credits_cost,
+    is_music_model, get_music_credits_cost,
 )
 from bot.keyboards import ASPECT_RATIOS
 from core.exceptions import BotError, QuotaExceededError, SafetyFilterError
@@ -135,6 +136,10 @@ def _prompt_to_filename(prompt: str, max_words: int = 6) -> str:
     slug = "_".join(words) if words else "image"
     slug = slug[:60]
     return f"{slug}.png"
+
+
+def _prompt_to_audio_filename(prompt: str) -> str:
+    return _prompt_to_filename(prompt).replace(".png", ".mp3")
 
 
 def _upscale_image(image_bytes: bytes, max_side: int) -> bytes:
@@ -272,6 +277,21 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         )
         s = get_user_settings(user_id)
         mid = s.get("model", "gemini-3.1-flash-image-preview")
+        if is_music_model(mid):
+            mi = AVAILABLE_MODELS.get(mid, {})
+            return "\n".join([
+                f"⚙️ Настройки — {mi.get('label', mid)}",
+                "",
+                "┌─────────────────────",
+                f"│ 🎵 Длительность: {mi.get('duration_label', 'аудио')}",
+                f"│ 💰 Стоимость: {mi.get('credits', 2)} кр.",
+                f"│ 💵 Google: ${mi.get('google_price_usd', 0):.2f}",
+                "│ 📥 Вход: текст или фото",
+                "│ 📤 Выход: MP3",
+                "└─────────────────────",
+                "",
+                "Чтобы изменить музыкальную модель, нажмите кнопку модели.",
+            ])
         if not is_video_model(mid):
             return "⚙️ Настройки\n\nВыберите что изменить:"
         mi = AVAILABLE_MODELS.get(mid, {})
@@ -361,6 +381,8 @@ def register_handlers(bot: Bot, vertex_service: VertexAIService) -> None:
         lines.append("📋 Стоимость генерации:")
         lines.append("▫️ Фото 2К, Full HD и ниже — 1 кредит")
         lines.append("▫️ Фото 4K — 2 кредита")
+        lines.append("▫️ Lyria 3 Pro (полная песня) — 4 кредита")
+        lines.append("▫️ Lyria 3 (30 сек.) — 2 кредита")
         lines.append("")
         lines.append("💬 Чат с ИИ (в день):")
         lines.append(f"▫️ Использовано: {chat_used} из {chat_limit}")
@@ -943,6 +965,7 @@ async def _generate_and_send(
     settings = get_user_settings(uid)
     user_model = settings.get("model", "gemini-3.1-flash-image-preview")
     _is_video = is_video_model(user_model)
+    _is_music = is_music_model(user_model)
 
     if _is_video and images:
         from bot.user_settings import video_supports_image as _vsi_check
@@ -958,6 +981,8 @@ async def _generate_and_send(
 
     if _is_video:
         credits_cost = get_video_credits_cost(user_model)
+    elif _is_music:
+        credits_cost = get_music_credits_cost(user_model)
     else:
         credits_cost = 2 if settings.get("resolution") == "4k" else 1
 
@@ -965,7 +990,7 @@ async def _generate_and_send(
         cost_label = f"{credits_cost} кредитов" if credits_cost > 1 else "1 кредит"
         msg = (
             f"💳 Недостаточно кредитов\n\n"
-            f"Генерация {'видео' if _is_video else 'изображения'} стоит {cost_label}.\n"
+            f"Генерация {'видео' if _is_video else 'музыки' if _is_music else 'изображения'} стоит {cost_label}.\n"
             "Пополните баланс для продолжения."
         )
         await bot.api.messages.send(peer_id=peer_id, random_id=0, message=msg)
@@ -977,13 +1002,16 @@ async def _generate_and_send(
     resolution = settings.get("resolution", "original")
     max_side = RESOLUTIONS.get(resolution, {}).get("max_side", 0)
 
-    gen_type = "видео" if _is_video else "изображение"
-    action = "Редактирую" if images and not _is_video else "Генерирую"
+    gen_type = "видео" if _is_video else "музыку" if _is_music else "изображение"
+    action = "Редактирую" if images and not _is_video and not _is_music else "Генерирую"
     base_text = f"🎨 {action} {gen_type}...\n🤖 {model_label}"
     if _is_video:
         dur = settings.get("video_duration", 8)
         vres = settings.get("video_resolution", "720p")
         base_text += f"\n⏱ {dur} сек • 📺 {vres}"
+    elif _is_music:
+        duration_label = AVAILABLE_MODELS.get(user_model, {}).get("duration_label", "MP3")
+        base_text += f"\n⏱ {duration_label} • MP3"
 
     processing_id = await bot.api.messages.send(
         peer_id=peer_id, random_id=0,
@@ -1016,6 +1044,15 @@ async def _generate_and_send(
                 user_id=uid,
                 username=f"vk:{uid}",
                 image=_ref_image,
+            )
+    elif _is_music:
+        async def _do_generate() -> bytes:
+            return await vertex_service.generate_music(
+                prompt=prompt,
+                model=user_model,
+                user_id=uid,
+                username=f"vk:{uid}",
+                image=images[0] if images else None,
             )
     else:
         async def _do_generate() -> bytes:
@@ -1054,6 +1091,23 @@ async def _generate_and_send(
                 attachment = await upload_document_to_vk(bot.api, peer_id, result_bytes, filename="video.mp4")
             finally:
                 await upload_animator.stop()
+        elif _is_music:
+            caption = f"✅ Музыка готова! ({elapsed} сек.)\n{prompt[:200]}"
+            upload_base = f"🎨 {action} {gen_type}...\n🤖 {model_label}\n\n✅ Готово за {elapsed} сек."
+            upload_animator = VKProgressAnimator(
+                bot, peer_id, processing_id, upload_base,
+                action_text="📤 Загрузка MP3",
+            )
+            upload_animator.start()
+            try:
+                attachment = await upload_document_to_vk(
+                    bot.api,
+                    peer_id,
+                    result_bytes,
+                    filename=_prompt_to_audio_filename(prompt),
+                )
+            finally:
+                await upload_animator.stop()
         else:
             send_mode = settings.get("send_mode", "photo")
             caption = f"✅ Изображение готово! ({elapsed} сек.)\n{prompt[:200]}"
@@ -1085,7 +1139,7 @@ async def _generate_and_send(
         except Exception:
             pass
 
-        if not _is_video:
+        if not _is_video and not _is_music:
             asyncio.create_task(log_generation_vk(
                 image_bytes=result_bytes,
                 prompt=prompt,

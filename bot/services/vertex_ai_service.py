@@ -13,6 +13,7 @@ Multiple keys/accounts rotate automatically on 429 errors.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import json
 import logging
@@ -54,10 +55,12 @@ MODEL_QPM: dict[str, int] = {
     "pro-image":   3,
     "veo-3.1":     2,
     "veo-":        2,
+    "lyria-3":     2,
     "default":    60,
 }
 
 VIDEO_MODELS = {"veo-3.1-generate-001", "veo-3.1-fast-generate-001", "veo-3.1-lite-generate-001"}
+MUSIC_MODELS = {"lyria-3-pro-preview", "lyria-3-clip-preview"}
 
 VIDEO_POLL_INTERVAL = 10
 VIDEO_POLL_TIMEOUT = 600
@@ -486,9 +489,11 @@ class VertexAIService:
                 "req_flash": slot.requests_in_window_family("flash-image"),
                 "req_pro": slot.requests_in_window_family("pro-image"),
                 "req_veo": slot.requests_in_window_family("veo-"),
+                "req_lyria": slot.requests_in_window_family("lyria-"),
                 "qpm_flash": _qpm_for_model("flash-image"),
                 "qpm_pro": _qpm_for_model("pro-image"),
                 "qpm_veo": _qpm_for_model("veo-3.1"),
+                "qpm_lyria": _qpm_for_model("lyria-3"),
             })
         return result
 
@@ -500,13 +505,209 @@ class VertexAIService:
     def _is_video_model(self, model: str) -> bool:
         return model.startswith("veo-")
 
+    def _is_music_model(self, model: str) -> bool:
+        return model.startswith("lyria-")
+
     def _filter_slots_for_model(self, model: str) -> list[_BaseSlot]:
         usable = [s for s in self._slots if not s.auth_error]
         if self._is_video_model(model):
             with_project = [s for s in usable if (isinstance(s, _ApiKeySlot) and s.has_project) or isinstance(s, _CredSlot)]
             if with_project:
                 return with_project
+        if self._is_music_model(model):
+            api_slots = [s for s in usable if isinstance(s, _ApiKeySlot)]
+            if api_slots:
+                return api_slots
         return usable
+
+    async def generate_music(
+        self,
+        prompt: str,
+        model: str = "lyria-3-clip-preview",
+        user_id: int | None = None,
+        username: str = "",
+        image: bytes | None = None,
+    ) -> bytes:
+        if model not in MUSIC_MODELS:
+            model = "lyria-3-clip-preview"
+        async with self._semaphore:
+            return await self._generate_music_inner(
+                prompt=prompt,
+                model=model,
+                user_id=user_id,
+                username=username,
+                image=image,
+            )
+
+    async def _generate_music_inner(
+        self,
+        prompt: str,
+        model: str,
+        user_id: int | None,
+        username: str,
+        image: bytes | None = None,
+    ) -> bytes:
+        deadline = time.monotonic() + 300
+        started_at = time.monotonic()
+
+        while time.monotonic() < deadline:
+            async with self._lock:
+                slot = self._get_next_available_slot(model)
+            if slot is None:
+                earliest = self._earliest_ready_at(model)
+                now = time.monotonic()
+                wait = max(0.1, earliest - now)
+                if now + wait > deadline:
+                    break
+                await asyncio.sleep(wait + 0.1)
+                continue
+
+            slot.record_request(model)
+            slot.active_requests += 1
+            slot.last_used_at = time.monotonic()
+            slot.last_model = model
+
+            try:
+                if not isinstance(slot, _ApiKeySlot):
+                    raise GenerationError("Музыка пока поддерживается только с API-ключами")
+
+                mode_label = "image→music" if image else "text→music"
+                logger.info(
+                    "Music [%s]: trying '%s' model=%s prompt='%s'",
+                    mode_label, slot.label, model, prompt[:60],
+                )
+
+                music_bytes = await asyncio.to_thread(
+                    self._generate_music_with_gemini_api,
+                    slot,
+                    prompt,
+                    model,
+                    image,
+                )
+
+                if not music_bytes:
+                    raise GenerationError("Музыка сгенерирована, но аудиоданные недоступны")
+
+                duration_ms = int((time.monotonic() - started_at) * 1000)
+                slot.total_ok += 1
+                slot.record_history(
+                    user_id=user_id, username=username, prompt=prompt,
+                    model=model, status="ok", duration_ms=duration_ms,
+                )
+                logger.info(
+                    "Music OK: slot='%s' model=%s duration=%.1fs size=%.1f KB",
+                    slot.label, model, duration_ms / 1000, len(music_bytes) / 1024,
+                )
+                return music_bytes
+
+            except (SafetyFilterError, GenerationError):
+                raise
+            except Exception as exc:
+                slot.total_err += 1
+                duration_ms = int((time.monotonic() - started_at) * 1000)
+                logger.error("Music: slot '%s' error: %s", slot.label, repr(exc))
+
+                if _is_safety_error(exc):
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="safety", error=str(exc)[:200],
+                        duration_ms=duration_ms,
+                    )
+                    raise SafetyFilterError(str(exc))
+                if _is_server_error(exc) and not any(
+                    kw in str(exc).lower() for kw in ("429", "quota", "resource exhausted")
+                ):
+                    slot.cooldown_until = time.monotonic() + 15
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="server_error", error=str(exc)[:200],
+                        duration_ms=duration_ms,
+                    )
+                elif _is_retryable(exc):
+                    slot.mark_rate_limited()
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="rate_limit", error="429",
+                        duration_ms=duration_ms,
+                    )
+                elif _is_auth_error(exc):
+                    slot.reset_client()
+                    slot.auth_error = True
+                    slot.auth_error_msg = str(exc)[:120]
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="auth_error", error=str(exc)[:200],
+                        duration_ms=duration_ms,
+                    )
+                    self._check_and_alert_auth_errors()
+                else:
+                    slot.record_history(
+                        user_id=user_id, username=username, prompt=prompt,
+                        model=model, status="error", error=str(exc)[:200],
+                        duration_ms=duration_ms,
+                    )
+                    raise GenerationError(str(exc))
+            finally:
+                slot.active_requests = max(0, slot.active_requests - 1)
+
+        logger.error("Music deadline reached — all slots busy for model %s", model)
+        self._alert_quota_exhausted(model)
+        raise QuotaExceededError()
+
+    def _generate_music_with_gemini_api(
+        self,
+        slot: _ApiKeySlot,
+        prompt: str,
+        model: str,
+        image: bytes | None,
+    ) -> bytes:
+        from google.genai import types as genai_types
+
+        client = slot.get_video_client()
+        contents: Any
+        if image is not None:
+            contents = [
+                prompt,
+                genai_types.Part.from_bytes(data=image, mime_type="image/jpeg"),
+            ]
+        else:
+            contents = prompt
+
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=genai_types.GenerateContentConfig(
+                response_modalities=["AUDIO", "TEXT"],
+            ),
+        )
+
+        parts = getattr(response, "parts", None)
+        if not parts and getattr(response, "candidates", None):
+            candidate = response.candidates[0]
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) if content else None
+
+        if not parts:
+            raise GenerationError("Lyria не вернула аудио")
+
+        for part in parts:
+            inline_data = getattr(part, "inline_data", None) or getattr(part, "inlineData", None)
+            if inline_data is not None:
+                data = getattr(inline_data, "data", None)
+                if data:
+                    if isinstance(data, str):
+                        return base64.b64decode(data)
+                    return data
+
+        text_parts = [
+            getattr(part, "text", "")
+            for part in parts
+            if getattr(part, "text", None)
+        ]
+        details = " ".join(text_parts)[:300]
+        if details and _is_safety_error_text(details):
+            raise SafetyFilterError(details)
+        raise GenerationError(details or "Lyria не вернула аудиоданные")
 
     def _get_next_available_slot(self, model: str) -> _BaseSlot | None:
         """Return the next ready slot using round-robin rotation.
@@ -514,7 +715,7 @@ class VertexAIService:
         After each use the pointer advances so every key gets equal traffic.
         'Ready' means: past cooldown_until AND has_capacity for this specific model
         AND no permanent auth error.
-        Video models (veo-*) use the Gemini Developer API for API-key slots.
+        Video/music models use the Gemini Developer API for API-key slots.
         """
         usable = self._filter_slots_for_model(model)
         if not usable:

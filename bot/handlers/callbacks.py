@@ -33,7 +33,7 @@ from bot.user_settings import (
     user_settings, get_user_settings, set_last_menu, save_user_settings,
     AVAILABLE_MODELS, SEND_MODES, RESOLUTIONS, THINKING_LEVELS,
     VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, VIDEO_TASKS,
-    is_video_model, get_available_tasks_for_model,
+    is_video_model, is_music_model, get_available_tasks_for_model,
 )
 from bot.services.lava_service import create_payment_url, CREDIT_PACKAGES
 
@@ -71,6 +71,19 @@ def _get_settings_text(uid: int) -> str:
     model_id = settings.get("model", "gemini-3.1-flash-image-preview")
     if is_video_model(model_id):
         return _video_settings_text(uid)
+    if is_music_model(model_id):
+        info = AVAILABLE_MODELS.get(model_id, {})
+        return (
+            f"⚙️ <b>Настройки — {info.get('label', model_id)}</b>\n\n"
+            "┌─────────────────────\n"
+            f"│ 🎵 Длительность: <b>{info.get('duration_label', 'аудио')}</b>\n"
+            f"│ 💰 Стоимость: <b>{info.get('credits', 2)} кр.</b>\n"
+            f"│ 💵 Google: <b>${info.get('google_price_usd', 0):.2f}</b>\n"
+            "│ 📥 Вход: <b>текст или фото</b>\n"
+            "│ 📤 Выход: <b>MP3</b>\n"
+            "└─────────────────────\n\n"
+            "Чтобы изменить музыкальную модель, нажмите кнопку модели."
+        )
     return _SETTINGS_TEXT
 
 

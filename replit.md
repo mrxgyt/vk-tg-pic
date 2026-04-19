@@ -1,14 +1,14 @@
 # PicGenAI — Telegram + VK Image Generation Bot
 
 ## Overview
-An asynchronous multi-platform bot (Telegram + VK) for AI image generation using Google Gemini / Vertex AI. Built with Python 3.12, aiogram 3.x (Telegram), and vkbottle (VK). Includes a credit-based monetization system with FreeKassa (VK) and Pally.info (TG) payment integration.
+An asynchronous multi-platform bot (Telegram + VK) for AI image, video, and music generation using Google Gemini / Vertex AI. Built with Python 3.12, aiogram 3.x (Telegram), and vkbottle (VK). Includes a credit-based monetization system with FreeKassa (VK) and Pally.info (TG) payment integration.
 
 ## Architecture
 - **Entry point**: `start_all.py` — runs Telegram bot, VK bot, and a web server concurrently via asyncio
 - **Web server**: aiohttp on port 5000 (dev) / 8080 (Northflank) — landing page, payment pages, webhooks
 - **Bot logic**: `bot/` — Telegram handlers, middlewares, services
 - **VK logic**: `vk_bot/` — VK handlers
-- **Shared services**: `bot/services/vertex_ai_service.py` — Google Gemini AI client
+- **Shared services**: `bot/services/vertex_ai_service.py` — Google Gemini AI client for images, Veo video, and Lyria music
 - **Payment (FreeKassa)**: `bot/services/freekassa_service.py` — URL-based payment for VK
 - **Payment (Pally)**: `bot/services/payment_service.py` — Pally.info API for Telegram
 - **Web pages**: `web/templates/` — landing (index.html), success.html, fail.html (+ fallback in code)
@@ -55,6 +55,7 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 - 5 free credits on registration (FREE_CREDITS = 5)
 - 1 credit per image generation, 2 credits for 4K
 - Video: 5 credits (Veo 3.1), 3 credits (Fast), 2 credits (Lite)
+- Music: 4 credits (Lyria 3 Pro full song, $0.08), 2 credits (Lyria 3 30s clip, $0.04)
 - Packages: 30 credits (99₽), 100 credits (299₽), 200 credits (549₽)
 
 ## Video Generation (Veo 3.1)
@@ -67,6 +68,13 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 - Interactive video panel: after selecting a video model, opens unified panel with all settings + toggle buttons + cost info
 - Panel callbacks: `vp_aspect_*`, `vp_dur_*`, `vp_res_*`, `vp_audio` — each re-renders panel in-place
 - Settings summary shows compact "🎬 Видео: Xs • Xp • 🔊 (X кр.)" button that opens the panel
+
+## Music Generation (Lyria 3)
+- Models: lyria-3-pro-preview (full song, 4 credits) and lyria-3-clip-preview (30s clip, 2 credits)
+- Inputs: text prompts and image + prompt; output is MP3 audio
+- Implementation: `VertexAIService.generate_music()` uses Gemini Developer API `generate_content` with AUDIO/TEXT response modalities and extracts MP3 bytes from inline data
+- Supported on both Telegram (`reply_audio`) and VK (document upload as .mp3)
+- Music models appear in the same unified model/settings picker as image and video models
 
 ## Bot UI
 - Persistent keyboard: Menu, Ideas, Settings, Balance, Stop
@@ -96,6 +104,6 @@ An asynchronous multi-platform bot (Telegram + VK) for AI image generation using
 
 ## Dependencies
 Managed via `requirements.txt` with pip. Key packages:
-- aiogram>=3.15, vkbottle>=4.8, google-genai>=1.9
+- aiogram>=3.15, vkbottle>=4.8, google-genai installed with Lyria-capable 1.52+ runtime
 - pydantic-settings>=2.7, Pillow>=11.0, aiohttp>=3.9
 - psycopg2-binary>=2.9

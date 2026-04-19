@@ -53,3 +53,4 @@ pydantic-settings>=2.7
 python-dotenv>=1.0
 tenacity>=9.0
 vkbottle>=4.8,<5
+google-genai>=1.52

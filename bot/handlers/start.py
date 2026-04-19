@@ -143,6 +143,8 @@ async def cmd_balance(message: Message) -> None:
     lines.append("📋 <b>Стоимость генерации:</b>")
     lines.append("▫️ Фото 2К, Full HD и ниже — <b>1 кредит</b>")
     lines.append("▫️ Фото 4K — <b>2 кредита</b>")
+    lines.append("▫️ Lyria 3 Pro (полная песня) — <b>4 кредита</b>")
+    lines.append("▫️ Lyria 3 (30 сек.) — <b>2 кредита</b>")
     lines.append("")
     lines.append("💬 <b>Чат с ИИ (в день):</b>")
     lines.append(f"▫️ Использовано: <b>{chat_used}</b> из <b>{chat_limit}</b>")

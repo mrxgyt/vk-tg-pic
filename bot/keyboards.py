@@ -13,6 +13,7 @@ from bot.user_settings import (
     VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, VIDEO_TASKS,
     is_video_model, get_video_credits_cost, video_supports_audio, video_supports_image,
     get_video_resolutions_for_model, get_available_tasks_for_model,
+    is_music_model,
 )
 
 BTN_MENU = "📋 Меню"
@@ -62,8 +63,9 @@ def get_model_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
     rows: list[list[InlineKeyboardButton]] = []
 
-    image_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.get("type") != "video"}
+    image_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.get("type") == "image"}
     video_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.get("type") == "video"}
+    music_models = {k: v for k, v in AVAILABLE_MODELS.items() if v.get("type") == "music"}
 
     rows.append([InlineKeyboardButton(text="── 🖼 Изображения ──", callback_data="noop")])
     for model_id, info in image_models.items():
@@ -78,6 +80,17 @@ def get_model_keyboard(user_id: int) -> InlineKeyboardMarkup:
     for model_id, info in video_models.items():
         label = info["label"]
         credits = info.get("credits", 3)
+        if model_id == current:
+            label = "✅ " + label
+        label += f" ({credits} кр.)"
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"model_{model_id}")
+        ])
+
+    rows.append([InlineKeyboardButton(text="── 🎵 Музыка ──", callback_data="noop")])
+    for model_id, info in music_models.items():
+        label = info["label"]
+        credits = info.get("credits", 2)
         if model_id == current:
             label = "✅ " + label
         label += f" ({credits} кр.)"
@@ -389,6 +402,22 @@ def get_settings_summary_keyboard(user_id: int) -> InlineKeyboardMarkup:
         if has_audio:
             audio_text = "✅ 🔊 Аудио вкл" if audio else "🔇 Аудио выкл"
             rows.append([InlineKeyboardButton(text=audio_text, callback_data="vp_audio")])
+    elif is_music_model(current_model):
+        model_info = AVAILABLE_MODELS.get(current_model, {})
+        duration_label = model_info.get("duration_label", "аудио")
+        credits = model_info.get("credits", 2)
+        rows.append([
+            InlineKeyboardButton(
+                text=f"🎵 Музыка: {duration_label} • {credits} кр.",
+                callback_data="noop",
+            ),
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                text="🖼 Вход: текст или фото",
+                callback_data="noop",
+            ),
+        ])
     else:
         aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
         rows.append([

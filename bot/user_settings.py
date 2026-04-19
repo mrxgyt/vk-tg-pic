@@ -91,6 +91,24 @@ AVAILABLE_MODELS: dict[str, dict[str, Any]] = {
         "supports_image": False,
         "supports_4k": False,
     },
+    "lyria-3-pro-preview": {
+        "label": "🎼 Lyria 3 Pro (Музыка)",
+        "desc": "Полная песня до 3 минут, текст или фото",
+        "type": "music",
+        "credits": 4,
+        "google_price_usd": 0.08,
+        "duration_label": "до 3 минут",
+        "supports_image": True,
+    },
+    "lyria-3-clip-preview": {
+        "label": "🎵 Lyria 3 (Музыка)",
+        "desc": "30-секундный музыкальный клип, текст или фото",
+        "type": "music",
+        "credits": 2,
+        "google_price_usd": 0.04,
+        "duration_label": "30 секунд",
+        "supports_image": True,
+    },
 }
 
 VIDEO_DURATIONS: dict[int, dict[str, str]] = {
@@ -170,9 +188,24 @@ def is_video_model(model_id: str) -> bool:
     return info.get("type") == "video"
 
 
+def is_music_model(model_id: str) -> bool:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return info.get("type") == "music"
+
+
 def get_video_credits_cost(model_id: str) -> int:
     info = AVAILABLE_MODELS.get(model_id, {})
     return info.get("credits", 3)
+
+
+def get_music_credits_cost(model_id: str) -> int:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return info.get("credits", 2)
+
+
+def music_supports_image(model_id: str) -> bool:
+    info = AVAILABLE_MODELS.get(model_id, {})
+    return bool(info.get("supports_image", True))
 
 
 def video_supports_audio(model_id: str) -> bool:

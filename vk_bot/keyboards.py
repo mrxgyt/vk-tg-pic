@@ -7,6 +7,7 @@ from bot.user_settings import (
     VIDEO_DURATIONS, VIDEO_RESOLUTIONS, VIDEO_ASPECT_RATIOS, VIDEO_TASKS,
     is_video_model, get_video_credits_cost, video_supports_audio, video_supports_image,
     get_video_resolutions_for_model, get_available_tasks_for_model,
+    is_music_model,
 )
 from bot.keyboards import ASPECT_RATIOS
 
@@ -66,6 +67,12 @@ def get_settings_keyboard(user_id: int) -> str:
         if has_audio:
             audio_text = "✅ 🔊 Аудио вкл" if audio else "🔇 Аудио выкл"
             kb.add(Callback(audio_text, payload={"cmd": "vp_audio"}))
+    elif is_music_model(current_model):
+        credits = model_info.get("credits", 2)
+        duration_label = model_info.get("duration_label", "аудио")
+        kb.add(Callback(f"🎵 {duration_label} • {credits} кр.", payload={"cmd": "noop"}))
+        kb.row()
+        kb.add(Callback("📥 Вход: текст или фото", payload={"cmd": "noop"}))
     else:
         aspect_label = ASPECT_RATIOS.get(settings.get("aspect_ratio", "1:1"), "1:1")
         kb.add(Callback(f"📐 Размер: {aspect_label}", payload={"cmd": "choose_aspect"}))
@@ -92,8 +99,9 @@ def get_model_keyboard(user_id: int) -> str:
     settings = get_user_settings(user_id)
     current = settings.get("model", "gemini-3.1-flash-image-preview")
 
-    image_models = [(k, v) for k, v in AVAILABLE_MODELS.items() if v.get("type") != "video"]
+    image_models = [(k, v) for k, v in AVAILABLE_MODELS.items() if v.get("type") == "image"]
     video_models = [(k, v) for k, v in AVAILABLE_MODELS.items() if v.get("type") == "video"]
+    music_models = [(k, v) for k, v in AVAILABLE_MODELS.items() if v.get("type") == "music"]
 
     kb = Keyboard(inline=True)
 
@@ -114,6 +122,18 @@ def get_model_keyboard(user_id: int) -> str:
                 label = "✅ " + label
             kb.add(Callback(label, payload={"cmd": "set_model", "id": model_id}))
             if (i + 1) % 2 == 0 or i == len(video_models) - 1:
+                kb.row()
+
+    if music_models:
+        kb.add(Callback("── 🎵 Музыка ──", payload={"cmd": "noop"}))
+        kb.row()
+        for i, (model_id, info) in enumerate(music_models):
+            credits = info.get("credits", 2)
+            label = f"{info['label']} ({credits} кр.)"
+            if model_id == current:
+                label = "✅ " + label
+            kb.add(Callback(label, payload={"cmd": "set_model", "id": model_id}))
+            if (i + 1) % 2 == 0 or i == len(music_models) - 1:
                 kb.row()
 
     kb.add(Callback("◀️ Назад", payload={"cmd": "back_settings"}))
